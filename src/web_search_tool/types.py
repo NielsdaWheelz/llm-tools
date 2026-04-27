@@ -126,6 +126,7 @@ class WebSearchResponse:
     results: tuple[WebSearchResultItem, ...]
     provider: str
     provider_request_id: str | None
+    retrieved_at: str
 
 
 class WebSearchProvider(Protocol):

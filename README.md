@@ -24,6 +24,7 @@ async def main() -> None:
     async with httpx.AsyncClient() as client:
         provider = BraveSearchProvider(client, api_key="...")
         response = await provider.search(WebSearchRequest(query="Brave Search API docs"))
+        print("retrieved at", response.retrieved_at)
         for result in response.results:
             print(result.title, result.url)
 ```
@@ -35,5 +36,6 @@ async def main() -> None:
 
 ## Scope
 
-This package normalizes search requests, results, and provider errors. It does not persist results,
-render citations, cache responses, scrape pages, summarize pages, or manage API keys.
+This package normalizes search requests, results, retrieval timestamps, and provider errors. It does
+not persist results, render citations, cache responses, scrape pages, summarize pages, or manage API
+keys.

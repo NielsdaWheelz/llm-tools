@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+from datetime import UTC, datetime
 from typing import Any
 from urllib.parse import parse_qsl, quote, urlencode, urlsplit, urlunsplit
 
@@ -22,6 +23,7 @@ _PROVIDER = "brave"
 _DEFAULT_BASE_URL = "https://api.search.brave.com/res/v1"
 _MAX_ATTEMPTS = 2
 _RETRY_BACKOFF_SECONDS = 0.25
+_MAX_RETRY_AFTER_SECONDS = 2.0
 
 
 class BraveSearchProvider:
@@ -36,9 +38,11 @@ class BraveSearchProvider:
         timeout_seconds: float = 8.0,
     ) -> None:
         self._client = client
-        self._api_key = api_key
-        self._base_url = base_url.rstrip("/")
-        self._timeout_seconds = timeout_seconds
+        self._api_key = api_key.strip()
+        self._base_url = _normalize_base_url(base_url)
+        self._timeout_seconds = float(timeout_seconds)
+        if self._timeout_seconds <= 0:
+            raise ValueError("Brave Search timeout_seconds must be positive")
 
     async def search(self, request: WebSearchRequest) -> WebSearchResponse:
         if not self._api_key:
@@ -63,6 +67,12 @@ class BraveSearchProvider:
                 )
                 response.raise_for_status()
                 data = response.json()
+                if not isinstance(data, dict):
+                    raise WebSearchError(
+                        WebSearchErrorCode.BAD_RESPONSE,
+                        "Brave Search returned malformed JSON",
+                        provider=_PROVIDER,
+                    )
                 return self._response_from_json(
                     data,
                     request,
@@ -104,9 +114,10 @@ class BraveSearchProvider:
                 ) from exc
 
             retry_after = last_error.retry_after if last_error is not None else None
-            await asyncio.sleep(
+            delay = (
                 retry_after if retry_after is not None else _RETRY_BACKOFF_SECONDS * (attempt + 1)
             )
+            await asyncio.sleep(delay)
 
         raise last_error or WebSearchError(
             WebSearchErrorCode.PROVIDER_DOWN,
@@ -170,6 +181,7 @@ class BraveSearchProvider:
             results=tuple(results),
             provider=_PROVIDER,
             provider_request_id=provider_request_id,
+            retrieved_at=datetime.now(tz=UTC).isoformat().replace("+00:00", "Z"),
         )
 
 
@@ -192,10 +204,41 @@ def _error_from_response(response: httpx.Response) -> WebSearchError:
     retry_after = response.headers.get("Retry-After")
     if retry_after:
         try:
-            error.retry_after = float(retry_after)
+            error.retry_after = min(max(float(retry_after), 0.0), _MAX_RETRY_AFTER_SECONDS)
         except ValueError:
             pass
     return error
+
+
+def _normalize_base_url(value: str) -> str:
+    raw = value.strip()
+    if not raw:
+        raise ValueError("Brave Search base_url must not be empty")
+
+    parsed = urlsplit(raw)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        raise ValueError("Brave Search base_url must be an HTTP(S) URL")
+    if parsed.username or parsed.password:
+        raise ValueError("Brave Search base_url must not contain credentials")
+    if parsed.query or parsed.fragment:
+        raise ValueError("Brave Search base_url must not contain query or fragment")
+
+    scheme = parsed.scheme.lower()
+    hostname = (parsed.hostname or "").lower()
+    if not hostname:
+        raise ValueError("Brave Search base_url must include a host")
+
+    try:
+        port = parsed.port
+    except ValueError as exc:
+        raise ValueError("Brave Search base_url has an invalid port") from exc
+
+    netloc = hostname
+    if port and not ((scheme == "https" and port == 443) or (scheme == "http" and port == 80)):
+        netloc = f"{hostname}:{port}"
+
+    path = quote(parsed.path.rstrip("/"), safe="/%:@")
+    return urlunsplit((scheme, netloc, path, "", ""))
 
 
 def _result_item_from_json(
