@@ -14,4 +14,4 @@ jobs:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
         with:
           persist-credentials: false
-      - uses: actions/dependency-review-action@f5b971718edcbb31275a1db40004592335c0e031
+      - uses: actions/dependency-review-action@dcd589ca9f7a6ded22e224ca2e288beb6bf9846b
