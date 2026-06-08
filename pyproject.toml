@@ -5,7 +5,7 @@ description = "Small async Python package for public web-search providers"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
-    "httpx>=0.28.0",
+    "httpx>=0.28.1",
 ]
 
 [build-system]
