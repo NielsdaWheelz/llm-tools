@@ -1,4 +1,4 @@
-name: CI
+name: llm-tools CI
 
 on:
   pull_request:
@@ -17,9 +17,9 @@ jobs:
         with:
           persist-credentials: false
       - uses: astral-sh/setup-uv@e58605a9b6da7c637471fab8847a5e5a6b8df081
-      - run: uv run ruff check .
-      - run: uv run ruff format --check .
-      - run: uv run pyright
-      - run: uv run pytest
+      - run: uv run --frozen ruff check src tests
+      - run: uv run --frozen ruff format --check src tests
+      - run: uv run --frozen pyright src tests
+      - run: uv run --frozen pytest -q
       - run: uv build --no-sources
-      - run: uv run pip-audit
+      - run: uv run --frozen pip-audit

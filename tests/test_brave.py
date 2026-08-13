@@ -10,8 +10,8 @@ import httpx
 import pytest
 import respx
 
-from web_search_tool.brave import BraveSearchProvider
-from web_search_tool.types import (
+from llm_tools.web.brave import BraveSearchProvider
+from llm_tools.web.contracts import (
     WebSearchError,
     WebSearchErrorCode,
     WebSearchRequest,
@@ -200,7 +200,7 @@ async def test_retries_retryable_status_then_succeeds(
     async def fake_sleep(seconds: float) -> None:
         delays.append(seconds)
 
-    monkeypatch.setattr("web_search_tool.brave.asyncio.sleep", fake_sleep)
+    monkeypatch.setattr("llm_tools.web.brave.asyncio.sleep", fake_sleep)
     route = respx.get(BRAVE_WEB_URL).mock(
         side_effect=[
             httpx.Response(429, headers={"Retry-After": "0.01"}),
@@ -242,12 +242,39 @@ async def test_custom_base_url_is_normalized_and_api_key_is_trimmed(
 async def test_provider_validates_base_url_and_timeout(httpx_client: httpx.AsyncClient) -> None:
     with pytest.raises(ValueError, match="HTTP"):
         BraveSearchProvider(httpx_client, api_key="test-key", base_url="api.search.brave.com")
+    with pytest.raises(ValueError, match="HTTPS"):
+        BraveSearchProvider(httpx_client, api_key="test-key", base_url="http://example.com")
     with pytest.raises(ValueError, match="credentials"):
         BraveSearchProvider(httpx_client, api_key="test-key", base_url="https://u:p@example.com")
     with pytest.raises(ValueError, match="query or fragment"):
         BraveSearchProvider(httpx_client, api_key="test-key", base_url="https://example.com?q=1")
     with pytest.raises(ValueError, match="positive"):
         BraveSearchProvider(httpx_client, api_key="test-key", timeout_seconds=0)
+    for invalid in (True, float("nan"), float("inf")):
+        with pytest.raises((TypeError, ValueError), match="timeout_seconds"):
+            BraveSearchProvider(httpx_client, api_key="test-key", timeout_seconds=invalid)
+
+
+@pytest.mark.asyncio
+async def test_provider_never_follows_a_client_configured_cross_origin_redirect() -> None:
+    seen: list[httpx.Request] = []
+
+    def transcript(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        return httpx.Response(302, headers={"Location": "https://evil.test/steal"})
+
+    async with httpx.AsyncClient(
+        transport=httpx.MockTransport(transcript),
+        follow_redirects=True,
+    ) as client:
+        with pytest.raises(WebSearchError):
+            await BraveSearchProvider(client, api_key="SECRET").search(
+                WebSearchRequest(query="redirect credentials", max_attempts=1)
+            )
+
+    assert len(seen) == 1
+    assert seen[0].url.host == "api.search.brave.com"
+    assert seen[0].headers["X-Subscription-Token"] == "SECRET"
 
 
 @pytest.mark.asyncio
@@ -261,7 +288,7 @@ async def test_timeout_after_bounded_retries_maps_to_web_search_error(
     async def fake_sleep(seconds: float) -> None:
         delays.append(seconds)
 
-    monkeypatch.setattr("web_search_tool.brave.asyncio.sleep", fake_sleep)
+    monkeypatch.setattr("llm_tools.web.brave.asyncio.sleep", fake_sleep)
     route = respx.get(BRAVE_WEB_URL).mock(side_effect=httpx.ReadTimeout("timed out"))
     provider = BraveSearchProvider(httpx_client, api_key="test-key")
 
@@ -300,7 +327,7 @@ async def test_provider_down_retries_then_fails(
     async def fake_sleep(seconds: float) -> None:
         delays.append(seconds)
 
-    monkeypatch.setattr("web_search_tool.brave.asyncio.sleep", fake_sleep)
+    monkeypatch.setattr("llm_tools.web.brave.asyncio.sleep", fake_sleep)
     route = respx.get(BRAVE_WEB_URL).respond(503, json={"error": "unavailable"})
     provider = BraveSearchProvider(httpx_client, api_key="test-key")
 
@@ -324,10 +351,10 @@ async def test_retry_after_delay_is_bounded(
     async def fake_sleep(seconds: float) -> None:
         delays.append(seconds)
 
-    monkeypatch.setattr("web_search_tool.brave.asyncio.sleep", fake_sleep)
+    monkeypatch.setattr("llm_tools.web.brave.asyncio.sleep", fake_sleep)
     route = respx.get(BRAVE_WEB_URL).mock(
         side_effect=[
-            httpx.Response(429, headers={"Retry-After": "99"}),
+            httpx.Response(429, headers={"Retry-After": "inf"}),
             httpx.Response(200, json={"web": {"results": []}}),
         ]
     )
@@ -337,7 +364,7 @@ async def test_retry_after_delay_is_bounded(
 
     assert response.results == ()
     assert route.call_count == 2
-    assert delays == [2.0]
+    assert delays == [0.25]
 
 
 @pytest.mark.asyncio
@@ -362,6 +389,62 @@ async def test_non_object_payload_maps_to_bad_response(httpx_client: httpx.Async
         await provider.search(WebSearchRequest(query="bad payload"))
 
     assert exc_info.value.code == WebSearchErrorCode.BAD_RESPONSE
+
+    oversized = httpx.MockTransport(
+        lambda _request: httpx.Response(
+            200,
+            headers={"Content-Length": str(2 * 1_024 * 1_024 + 1)},
+            content=b"{}",
+        )
+    )
+    async with httpx.AsyncClient(transport=oversized) as client:
+        with pytest.raises(WebSearchError) as oversized_error:
+            await BraveSearchProvider(client, api_key="test-key").search(
+                WebSearchRequest(query="oversized response", max_attempts=1)
+            )
+    assert oversized_error.value.code == WebSearchErrorCode.BAD_RESPONSE
+    assert oversized_error.value.attempts == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("payload", "headers"),
+    [
+        ({"web": []}, {}),
+        (
+            {
+                "web": {
+                    "results": [
+                        {
+                            "title": "Malformed profile",
+                            "url": "https://example.com/",
+                            "profile": "not-an-object",
+                        }
+                    ]
+                }
+            },
+            {},
+        ),
+        ({"web": {"results": []}, "request_id": {"bad": "type"}}, {}),
+        ({"web": {"results": []}}, {"x-request-id": "x" * 513}),
+    ],
+)
+async def test_nested_malformed_payload_maps_to_bad_response(
+    httpx_client: httpx.AsyncClient,
+    payload: object,
+    headers: dict[str, str],
+) -> None:
+    del httpx_client
+    transport = httpx.MockTransport(
+        lambda _request: httpx.Response(200, json=payload, headers=headers)
+    )
+    async with httpx.AsyncClient(transport=transport) as client:
+        provider = BraveSearchProvider(client, api_key="test-key")
+        with pytest.raises(WebSearchError) as exc_info:
+            await provider.search(WebSearchRequest(query="bad nested payload"))
+
+    assert exc_info.value.code == WebSearchErrorCode.BAD_RESPONSE
+    assert exc_info.value.attempts == 1
 
 
 def test_request_validates_query_limit_domains_and_safe_search() -> None:

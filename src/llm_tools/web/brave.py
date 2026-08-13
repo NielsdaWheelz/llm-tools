@@ -1,16 +1,18 @@
-"""Brave Search API provider."""
+"""Brave Search API binding."""
 
 from __future__ import annotations
 
 import asyncio
 import hashlib
+import json
+import math
 from datetime import UTC, datetime
 from typing import Any
 from urllib.parse import parse_qsl, quote, urlencode, urlsplit, urlunsplit
 
 import httpx
 
-from web_search_tool.types import (
+from llm_tools.web.contracts import (
     WebSearchError,
     WebSearchErrorCode,
     WebSearchRequest,
@@ -21,9 +23,10 @@ from web_search_tool.types import (
 
 _PROVIDER = "brave"
 _DEFAULT_BASE_URL = "https://api.search.brave.com/res/v1"
-_MAX_ATTEMPTS = 2
 _RETRY_BACKOFF_SECONDS = 0.25
 _MAX_RETRY_AFTER_SECONDS = 2.0
+# httpx decodes Content-Encoding before yielding response bytes.
+_MAX_DECODED_RESPONSE_BYTES = 2 * 1_024 * 1_024
 
 
 class BraveSearchProvider:
@@ -39,23 +42,21 @@ class BraveSearchProvider:
     ) -> None:
         self._client = client
         self._api_key = api_key.strip()
+        if not self._api_key:
+            raise ValueError("Brave Search API key must not be empty")
         self._base_url = _normalize_base_url(base_url)
+        if isinstance(timeout_seconds, bool) or not isinstance(timeout_seconds, (int, float)):
+            raise TypeError("Brave Search timeout_seconds must be numeric")
         self._timeout_seconds = float(timeout_seconds)
-        if self._timeout_seconds <= 0:
-            raise ValueError("Brave Search timeout_seconds must be positive")
+        if not math.isfinite(self._timeout_seconds) or self._timeout_seconds <= 0:
+            raise ValueError("Brave Search timeout_seconds must be positive and finite")
 
     async def search(self, request: WebSearchRequest) -> WebSearchResponse:
-        if not self._api_key:
-            raise WebSearchError(
-                WebSearchErrorCode.INVALID_KEY,
-                "Brave Search API key is not configured",
-                provider=_PROVIDER,
-            )
-
         last_error: WebSearchError | None = None
-        for attempt in range(_MAX_ATTEMPTS):
+        for attempt in range(request.max_attempts):
             try:
-                response = await self._client.get(
+                async with self._client.stream(
+                    "GET",
                     self._endpoint_for(request),
                     params=self._params_for(request),
                     headers={
@@ -63,10 +64,11 @@ class BraveSearchProvider:
                         "Accept-Encoding": "gzip",
                         "X-Subscription-Token": self._api_key,
                     },
+                    follow_redirects=False,
                     timeout=httpx.Timeout(self._timeout_seconds, connect=5.0),
-                )
-                response.raise_for_status()
-                data = response.json()
+                ) as response:
+                    response.raise_for_status()
+                    data = json.loads(await _bounded_response_body(response))
                 if not isinstance(data, dict):
                     raise WebSearchError(
                         WebSearchErrorCode.BAD_RESPONSE,
@@ -76,41 +78,50 @@ class BraveSearchProvider:
                 return self._response_from_json(
                     data,
                     request,
-                    response.headers.get("x-request-id")
-                    or response.headers.get("request-id")
-                    or data.get("request_id"),
+                    _provider_request_id(response, data),
+                    attempts=attempt + 1,
                 )
             except httpx.TimeoutException as exc:
                 last_error = WebSearchError(
                     WebSearchErrorCode.TIMEOUT,
                     "Brave Search request timed out",
                     provider=_PROVIDER,
+                    attempts=attempt + 1,
                 )
-                if attempt + 1 >= _MAX_ATTEMPTS:
+                if attempt + 1 >= request.max_attempts:
                     raise last_error from exc
             except httpx.HTTPStatusError as exc:
                 error = _error_from_response(exc.response)
+                error.attempts = attempt + 1
                 if error.code not in (
                     WebSearchErrorCode.RATE_LIMITED,
                     WebSearchErrorCode.PROVIDER_DOWN,
                 ):
                     raise error from exc
                 last_error = error
-                if attempt + 1 >= _MAX_ATTEMPTS:
+                if attempt + 1 >= request.max_attempts:
                     raise last_error from exc
             except (httpx.NetworkError, httpx.RemoteProtocolError) as exc:
                 last_error = WebSearchError(
                     WebSearchErrorCode.PROVIDER_DOWN,
                     "Brave Search network error",
                     provider=_PROVIDER,
+                    attempts=attempt + 1,
                 )
-                if attempt + 1 >= _MAX_ATTEMPTS:
+                if attempt + 1 >= request.max_attempts:
                     raise last_error from exc
-            except ValueError as exc:
+            except (
+                AttributeError,
+                httpx.DecodingError,
+                RecursionError,
+                TypeError,
+                ValueError,
+            ) as exc:
                 raise WebSearchError(
                     WebSearchErrorCode.BAD_RESPONSE,
                     "Brave Search returned malformed JSON",
                     provider=_PROVIDER,
+                    attempts=attempt + 1,
                 ) from exc
 
             retry_after = last_error.retry_after if last_error is not None else None
@@ -159,6 +170,8 @@ class BraveSearchProvider:
         data: dict[str, Any],
         request: WebSearchRequest,
         provider_request_id: str | None,
+        *,
+        attempts: int,
     ) -> WebSearchResponse:
         results: list[WebSearchResultItem] = []
         seen_urls: set[str] = set()
@@ -182,7 +195,35 @@ class BraveSearchProvider:
             provider=_PROVIDER,
             provider_request_id=provider_request_id,
             retrieved_at=datetime.now(tz=UTC).isoformat().replace("+00:00", "Z"),
+            attempts=attempts,
         )
+
+
+async def _bounded_response_body(response: httpx.Response) -> bytes:
+    content_length = response.headers.get("content-length")
+    if content_length is not None:
+        if not content_length.isdigit() or int(content_length) > _MAX_DECODED_RESPONSE_BYTES:
+            raise ValueError("Brave Search response exceeds the wire limit")
+    body = bytearray()
+    async for chunk in response.aiter_bytes():
+        body.extend(chunk)
+        if len(body) > _MAX_DECODED_RESPONSE_BYTES:
+            raise ValueError("Brave Search response exceeds the wire limit")
+    return bytes(body)
+
+
+def _provider_request_id(response: httpx.Response, data: dict[str, Any]) -> str | None:
+    if "x-request-id" in response.headers:
+        value: object = response.headers["x-request-id"]
+    elif "request-id" in response.headers:
+        value = response.headers["request-id"]
+    else:
+        value = data.get("request_id")
+    if value is None:
+        return None
+    if not isinstance(value, str) or len(value) > 512:
+        raise ValueError("Brave Search request id is invalid")
+    return value
 
 
 def _error_from_response(response: httpx.Response) -> WebSearchError:
@@ -204,7 +245,9 @@ def _error_from_response(response: httpx.Response) -> WebSearchError:
     retry_after = response.headers.get("Retry-After")
     if retry_after:
         try:
-            error.retry_after = min(max(float(retry_after), 0.0), _MAX_RETRY_AFTER_SECONDS)
+            parsed = float(retry_after)
+            if math.isfinite(parsed):
+                error.retry_after = min(max(parsed, 0.0), _MAX_RETRY_AFTER_SECONDS)
         except ValueError:
             pass
     return error
@@ -216,8 +259,8 @@ def _normalize_base_url(value: str) -> str:
         raise ValueError("Brave Search base_url must not be empty")
 
     parsed = urlsplit(raw)
-    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
-        raise ValueError("Brave Search base_url must be an HTTP(S) URL")
+    if parsed.scheme != "https" or not parsed.netloc:
+        raise ValueError("Brave Search base_url must be an HTTPS URL")
     if parsed.username or parsed.password:
         raise ValueError("Brave Search base_url must not contain credentials")
     if parsed.query or parsed.fragment:
@@ -261,6 +304,9 @@ def _result_item_from_json(
     published_at = (
         raw.get("age") or raw.get("page_age") or raw.get("published") or raw.get("published_time")
     )
+    extra_snippets = raw.get("extra_snippets") or []
+    if not isinstance(extra_snippets, list):
+        raise ValueError("Brave extra snippets must be an array")
     ref_type = "news" if request_type == WebSearchResultType.NEWS else "web"
 
     return WebSearchResultItem(
@@ -271,7 +317,7 @@ def _result_item_from_json(
         snippet=str(raw.get("description") or "").strip()[:1000],
         extra_snippets=tuple(
             snippet.strip()[:1000]
-            for snippet in (raw.get("extra_snippets") or [])[:5]
+            for snippet in extra_snippets[:5]
             if isinstance(snippet, str) and snippet.strip()
         ),
         published_at=_published_at(published_at),
@@ -283,17 +329,26 @@ def _result_item_from_json(
 
 
 def _ordered_results(data: dict[str, Any], result_type: WebSearchResultType) -> list[Any]:
-    web_results = list((data.get("web") or {}).get("results") or [])
+    web_results = _nested_results(data, "web")
     if result_type == WebSearchResultType.WEB:
         return web_results
 
-    news_results = list((data.get("news") or {}).get("results") or data.get("results") or [])
+    news_results = _nested_results(data, "news", fallback=data.get("results"))
     if result_type == WebSearchResultType.NEWS:
         return news_results
 
     if result_type == WebSearchResultType.MIXED:
         ordered: list[Any] = []
-        for item in (data.get("mixed") or {}).get("main") or []:
+        mixed = data.get("mixed")
+        if mixed is None:
+            mixed_main: object = []
+        elif isinstance(mixed, dict):
+            mixed_main = mixed.get("main", [])
+        else:
+            raise ValueError("Brave mixed results must be an object")
+        if not isinstance(mixed_main, list):
+            raise ValueError("Brave mixed result order must be an array")
+        for item in mixed_main:
             if not isinstance(item, dict) or not isinstance(item.get("index"), int):
                 continue
             source_index = item["index"]
@@ -304,6 +359,24 @@ def _ordered_results(data: dict[str, Any], result_type: WebSearchResultType) -> 
         return ordered or [*web_results, *news_results]
 
     raise ValueError(f"Unsupported web search result type: {result_type}")
+
+
+def _nested_results(
+    data: dict[str, Any],
+    key: str,
+    *,
+    fallback: object = None,
+) -> list[Any]:
+    container = data.get(key)
+    if container is None:
+        results = [] if fallback is None else fallback
+    elif isinstance(container, dict):
+        results = container.get("results", [] if fallback is None else fallback)
+    else:
+        raise ValueError(f"Brave {key} results must be an object")
+    if not isinstance(results, list):
+        raise ValueError(f"Brave {key} result list must be an array")
+    return results
 
 
 def _normalize_http_url(value: Any) -> str | None:
@@ -326,7 +399,7 @@ def _normalize_http_url(value: Any) -> str | None:
     if port and not ((scheme == "https" and port == 443) or (scheme == "http" and port == 80)):
         netloc = f"{hostname}:{port}"
 
-    return urlunsplit(
+    normalized = urlunsplit(
         (
             scheme,
             netloc,
@@ -335,6 +408,7 @@ def _normalize_http_url(value: Any) -> str | None:
             "",
         )
     )
+    return normalized if len(normalized) <= 4_096 else None
 
 
 def _hostname(url: str) -> str:
