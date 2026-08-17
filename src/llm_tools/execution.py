@@ -188,7 +188,7 @@ class DeclaredToolFailure(Exception):
 
 
 class BoundaryFailure(Exception):
-    """Private signal reserved for library-owned boundary bindings."""
+    """Typed handler signal for one executor-owned boundary failure."""
 
     def __init__(self, error_type: str, *, actual_attempts: int = 0) -> None:
         if error_type not in {

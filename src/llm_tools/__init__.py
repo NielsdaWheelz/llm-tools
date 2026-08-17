@@ -27,6 +27,7 @@ from .discovery import (
 )
 from .evidence import EvidenceReceipt, sha256_hex
 from .execution import (
+    BoundaryFailure,
     BudgetState,
     Cancellation,
     DeclaredToolFailure,
@@ -49,6 +50,7 @@ from .execution import (
     Telemetry,
     ToolExecutor,
     ToolResult,
+    raw_input_digest,
 )
 from .profiles import (
     CapabilityProfile,
@@ -113,6 +115,7 @@ __all__ = [
     "WEB_READ_SPEC",
     "WEB_SEARCH_SPEC",
     "BraveSearchProvider",
+    "BoundaryFailure",
     "BudgetState",
     "Cancellation",
     "CapabilityProfile",
@@ -198,6 +201,7 @@ __all__ = [
     "bind_web_read",
     "canonical_json_bytes",
     "published_tool_ids",
+    "raw_input_digest",
     "render_prompt",
     "sha256_hex",
     "web_family",
