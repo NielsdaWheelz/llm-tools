@@ -5,8 +5,9 @@ from __future__ import annotations
 from typing import Any
 
 import pytest
+from pydantic import ValidationError
 
-from llm_tools.web.contracts import WebSearchRequest, WebSearchResultType
+from llm_tools.web.contracts import WebSearchInput, WebSearchRequest, WebSearchResultType
 
 
 def test_request_normalizes_simple_fields() -> None:
@@ -25,6 +26,18 @@ def test_request_normalizes_simple_fields() -> None:
     assert request.search_lang == "en"
     assert request.allowed_domains == ("example.com",)
     assert request.blocked_domains == ("spam.example",)
+
+
+def test_programmatic_request_is_broader_than_model_visible_input() -> None:
+    one_character = WebSearchRequest(query="x")
+    many_words = WebSearchRequest(query=" ".join(f"term-{index}" for index in range(51)))
+
+    assert one_character.query == "x"
+    assert len(many_words.query.split()) == 51
+    with pytest.raises(ValidationError):
+        WebSearchInput(query="x", freshness_days=None)
+    with pytest.raises(ValidationError):
+        WebSearchInput(query=many_words.query, freshness_days=None)
 
 
 @pytest.mark.parametrize(

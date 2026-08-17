@@ -17,6 +17,7 @@ _MAX_QUERY_LENGTH = 400
 _MAX_QUERY_WORDS = 50
 _MAX_LIMIT = 10
 _MAX_QUERY_WORDS_PATTERN = r"^\s*\S+(?:\s+\S+){0,49}\s*$"
+_MIN_PROGRAMMATIC_QUERY_LENGTH = 1
 
 
 class WebSearchResultType(StrEnum):
@@ -80,12 +81,10 @@ class WebSearchRequest:
             raise ValueError("Web search safe_search is invalid")
 
         query = " ".join(self.query.split())
-        if len(query) < _MIN_QUERY_LENGTH:
+        if len(query) < _MIN_PROGRAMMATIC_QUERY_LENGTH:
             raise ValueError("Web search query is too short")
         if len(query) > _MAX_QUERY_LENGTH:
             raise ValueError("Web search query is too long")
-        if len(query.split()) > _MAX_QUERY_WORDS:
-            raise ValueError("Web search query has too many words")
         if isinstance(self.limit, bool) or not isinstance(self.limit, int):
             raise TypeError("Web search limit must be an integer")
         if self.limit < 1 or self.limit > _MAX_LIMIT:

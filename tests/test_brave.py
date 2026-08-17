@@ -451,7 +451,7 @@ def test_request_validates_query_limit_domains_and_safe_search() -> None:
     invalid_safe_search: Any = "loose"
 
     with pytest.raises(ValueError, match="too short"):
-        WebSearchRequest(query="x")
+        WebSearchRequest(query=" ")
     with pytest.raises(ValueError, match="between"):
         WebSearchRequest(query="valid", limit=11)
     with pytest.raises(ValueError, match="registrable"):
