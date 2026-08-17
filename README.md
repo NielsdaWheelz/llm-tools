@@ -89,6 +89,8 @@ async def search_once(api_key: str) -> None:
 
 `llm_tools.testing` contains process-local conformance doubles only. They are not durable replay,
 budget, recovery, or production storage implementations. A production host supplies those owners.
+Hosts persist `raw_input_digest(...)` as invocation identity; a binding may raise
+`BoundaryFailure` only for the four executor-owned boundary outcomes.
 
 ## Activation and security
 

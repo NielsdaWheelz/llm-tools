@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import shutil
 import subprocess
 import sys
@@ -13,6 +14,7 @@ from pydantic import BaseModel, ConfigDict
 PUBLIC_FACADE = {
     "Available",
     "BraveSearchProvider",
+    "BoundaryFailure",
     "BudgetState",
     "Cancellation",
     "CapabilityProfile",
@@ -103,6 +105,7 @@ PUBLIC_FACADE = {
     "bind_web_read",
     "canonical_json_bytes",
     "published_tool_ids",
+    "raw_input_digest",
     "render_prompt",
     "sha256_hex",
     "web_family",
@@ -115,6 +118,19 @@ def test_llm_tools_public_facade() -> None:
     assert set(llm_tools.__all__) == PUBLIC_FACADE
     assert llm_tools.BraveSearchProvider.__module__ == "llm_tools.web.brave"
     assert llm_tools.WebSearchRequest.__module__ == "llm_tools.web.contracts"
+
+
+def test_public_execution_boundary_and_input_digest_are_stable() -> None:
+    import llm_tools
+
+    raw = llm_tools.ParsedJson({"query": "one"})
+    expected = hashlib.sha256(
+        llm_tools.canonical_json_bytes({"type": "ParsedJson", "value": {"query": "one"}})
+    ).hexdigest()
+
+    assert llm_tools.raw_input_digest(raw) == expected
+    failure = llm_tools.BoundaryFailure("InvalidInput", actual_attempts=0)
+    assert (failure.error_type, failure.actual_attempts) == ("InvalidInput", 0)
 
 
 @pytest.mark.asyncio
