@@ -191,6 +191,42 @@ async def test_mixed_search_respects_brave_mixed_order(httpx_client: httpx.Async
 
 @pytest.mark.asyncio
 @respx.mock
+async def test_host_limit_twenty_is_forwarded_and_caps_normalized_results(
+    httpx_client: httpx.AsyncClient,
+) -> None:
+    route = respx.get(BRAVE_WEB_URL).respond(
+        200,
+        json={
+            "web": {
+                "results": [
+                    {
+                        "title": f"Result {index}",
+                        "url": f"https://example.com/{index}",
+                        "description": f"Snippet {index}",
+                    }
+                    for index in range(1, 22)
+                ]
+            }
+        },
+    )
+    provider = BraveSearchProvider(httpx_client, api_key="test-key")
+
+    response = await provider.search(
+        WebSearchRequest(
+            query="host owned breadth",
+            result_type=WebSearchResultType.WEB,
+            limit=20,
+        )
+    )
+
+    assert route.calls.last.request.url.params["count"] == "20"
+    assert len(response.results) == 20
+    assert [result.rank for result in response.results] == list(range(1, 21))
+    assert response.results[-1].title == "Result 20"
+
+
+@pytest.mark.asyncio
+@respx.mock
 async def test_retries_retryable_status_then_succeeds(
     monkeypatch: pytest.MonkeyPatch,
     httpx_client: httpx.AsyncClient,
@@ -452,8 +488,8 @@ def test_request_validates_query_limit_domains_and_safe_search() -> None:
 
     with pytest.raises(ValueError, match="too short"):
         WebSearchRequest(query=" ")
-    with pytest.raises(ValueError, match="between"):
-        WebSearchRequest(query="valid", limit=11)
+    with pytest.raises(ValueError, match="between 1 and 20"):
+        WebSearchRequest(query="valid", limit=21)
     with pytest.raises(ValueError, match="registrable"):
         WebSearchRequest(query="valid", allowed_domains=("localhost",))
     with pytest.raises(ValueError, match="safe_search"):

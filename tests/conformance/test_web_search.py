@@ -136,6 +136,9 @@ def test_model_visible_contract_is_small_closed_and_honest() -> None:
     assert WEB_SEARCH_SPEC.limits.max_attempts == 2
     assert WEB_SEARCH_SPEC.limits.max_output_bytes == 32 * 1_024
     assert WEB_SEARCH_SPEC.limits.deadline_seconds == 15.0
+    result_schema = WEB_SEARCH_SPEC.success_schema.semantic["properties"]["results"]
+    assert result_schema["maxItems"] == 10
+    assert result_schema["items"]["properties"]["rank"]["maximum"] == 10
     declared = WEB_SEARCH_SPEC.declared_error_schema
     assert declared is not None
     assert {branch["properties"]["type"]["const"] for branch in declared.semantic["anyOf"]} == {
@@ -143,6 +146,19 @@ def test_model_visible_contract_is_small_closed_and_honest() -> None:
         "UpstreamUnavailable",
         "InvalidUpstreamResponse",
     }
+
+
+@pytest.mark.asyncio
+async def test_model_binding_remains_capped_at_ten_results(
+    search_client: httpx.AsyncClient,
+) -> None:
+    provider = BraveSearchProvider(search_client, api_key="test-key")
+
+    binding = bind_brave_web_search(provider, max_results=10)
+
+    assert binding.policy_inputs["max_results"] == 10
+    with pytest.raises(ValueError, match="between 1 and 10"):
+        bind_brave_web_search(provider, max_results=11)
 
 
 @pytest.mark.asyncio
