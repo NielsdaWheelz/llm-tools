@@ -15,7 +15,7 @@ from llm_tools.evidence import EvidenceReceipt
 _MIN_QUERY_LENGTH = 2
 _MAX_QUERY_LENGTH = 400
 _MAX_QUERY_WORDS = 50
-_MAX_LIMIT = 10
+_MAX_LIMIT = 20
 _MAX_QUERY_WORDS_PATTERN = r"^\s*\S+(?:\s+\S+){0,49}\s*$"
 _MIN_PROGRAMMATIC_QUERY_LENGTH = 1
 
