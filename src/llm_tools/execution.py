@@ -222,6 +222,8 @@ class ExecutorConfigurationDefect(RuntimeError):
 
 
 class RecoveryRequired(RuntimeError):
+    """Host-only signal that an occupied position requires reconciliation."""
+
     pass
 
 
@@ -382,6 +384,10 @@ class ToolExecutor:
             if binding.replay_policy is ReplayPolicy.BilledOnce:
                 await context.recorder.uncertain(position=context.position)
                 raise RecoveryRequired("BilledOnce tool outcome is uncertain") from exc
+            if binding.spec.effect is ToolEffect.Write:
+                raise RecoveryRequired(
+                    "ReDispatchable Write outcome requires reconciliation"
+                ) from exc
             return await _terminalize_boundary(
                 "DeadlineExceeded",
                 context,
@@ -416,6 +422,10 @@ def _verify_context(
     binding: ToolBinding[object, object, object],
     context: ExecutionContext,
 ) -> None:
+    try:
+        context.plan._require_integrity()
+    except (AttributeError, KeyError, TypeError, ValueError) as exc:
+        raise ExecutorConfigurationDefect("execution requires a consistent frozen plan") from exc
     if context.catalog_view is not context.plan.catalog_view:
         raise ExecutorConfigurationDefect("context must use the plan-owned catalogue view")
     if context.budgets.limits != context.plan.profile.run_limits:
@@ -432,6 +442,7 @@ def _verify_context(
         planned_binding.policy_revision != binding.policy_revision
         or planned_spec.tool_contract_revision != binding.spec.tool_contract_revision
         or context.grant != planned_grant
+        or context.grant.implementation_revision != binding.implementation_revision
         or context.grant.tool_contract_revision != binding.spec.tool_contract_revision
         or context.grant.policy_revision != binding.policy_revision
     ):

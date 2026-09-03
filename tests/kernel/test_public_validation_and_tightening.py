@@ -94,6 +94,7 @@ def _binding(
     *,
     tool_id: str = "test.echo",
     input_type: type[BaseModel] = Input,
+    implementation_revision: str = "test-echo-v1",
     policy_epoch: str = "v1",
 ) -> ToolBinding[Any, Success, NoDeclaredError]:
     spec = ToolSpec(
@@ -110,6 +111,7 @@ def _binding(
         spec=spec,
         execute=Available(_unused_handler),
         replay_policy=ReplayPolicy.ReDispatchable,
+        implementation_revision=implementation_revision,
         policy_epoch=PolicyEpoch(policy_epoch),
         policy_inputs={},
     )
@@ -170,6 +172,7 @@ def test_validate_tool_input_returns_the_declared_owned_type() -> None:
         spec=spec,
         execute=Available(_unused_handler),
         replay_policy=ReplayPolicy.ReDispatchable,
+        implementation_revision="test-typed-v1",
         policy_epoch=PolicyEpoch("v1"),
         policy_inputs={},
     )
@@ -296,6 +299,13 @@ def test_frozen_profile_rejects_extra_grants_and_revision_changes() -> None:
         run_limits=MAXIMUM_RUN_LIMITS,
         profile_id="changed-policy",
     )
+    implementation_change = _binding(implementation_revision="test-echo-v2")
+    _, changed_implementation = _profile(
+        (implementation_change,),
+        grants=(ToolGrant(implementation_change.spec.id, MAXIMUM_TOOL_LIMITS),),
+        run_limits=MAXIMUM_RUN_LIMITS,
+        profile_id="changed-implementation",
+    )
     contract_change = _binding(input_type=ChangedInput)
     _, changed_contract = _profile(
         (contract_change,),
@@ -305,5 +315,6 @@ def test_frozen_profile_rejects_extra_grants_and_revision_changes() -> None:
     )
 
     assert not extra_grant.is_tightening_of(maximum)
+    assert not changed_implementation.is_tightening_of(maximum)
     assert not changed_policy.is_tightening_of(maximum)
     assert not changed_contract.is_tightening_of(maximum)

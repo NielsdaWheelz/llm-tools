@@ -87,6 +87,7 @@ def _binding(tool_id: str, summary: str) -> ToolBinding[Input, Success, Failure]
         spec=spec,
         execute=Available(_unused_handler),
         replay_policy=ReplayPolicy.BilledOnce,
+        implementation_revision=f"test-{tool_id}-v1",
         policy_epoch=PolicyEpoch("host-v1"),
         policy_inputs={},
     )
@@ -139,6 +140,7 @@ def test_host_table_publishes_exact_ordered_plan_as_escaped_prompt_data() -> Non
         "effective_limits": TOOL_LIMITS.tightened(max_output_bytes=1_024).json(),
         "error_schema": zeta.spec.error_schema.presentation,
         "id": "zeta.read",
+        "implementation_revision": zeta.implementation_revision,
         "input_schema": zeta.spec.input_schema.presentation,
         "policy_revision": zeta.policy_revision,
         "replay_policy": "BilledOnce",

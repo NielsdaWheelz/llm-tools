@@ -218,11 +218,16 @@ class ToolBinding[InputT, SuccessT, ErrorT]:
     spec: ToolSpec[InputT, SuccessT, ErrorT]
     execute: Available[InputT] | Unavailable
     replay_policy: ReplayPolicy
+    implementation_revision: str
     policy_epoch: PolicyEpoch
     policy_inputs: Mapping[str, object]
     policy_revision: str = field(init=False)
 
     def __post_init__(self) -> None:
+        if not isinstance(self.implementation_revision, str):
+            raise TypeError("implementation revision must be a string")
+        if not self.implementation_revision.strip():
+            raise ValueError("implementation revision must not be empty")
         canonical_inputs = {key: self.policy_inputs[key] for key in sorted(self.policy_inputs)}
         canonical_json_bytes(canonical_inputs)
         object.__setattr__(self, "policy_inputs", _freeze_json(canonical_inputs))

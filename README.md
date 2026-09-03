@@ -99,24 +99,45 @@ binding's declared input type or raises `SchemaDecodeError`; it has no execution
 occupy a position, inspect or reserve a budget, touch a recorder, or dispatch a handler.
 
 `FrozenCapabilityProfile.is_tightening_of(maximum)` proves that every candidate grant is present in
-the maximum with the same tool-contract and policy revisions and no wider tool or run limit.
-`FrozenToolPlan.is_tightening_of(maximum_profile)` applies the same authority proof to a plan.
-Profile identity, profile revision, plan revision, and exposure may differ because narrowing and
-publication mode are separate concerns. A host that requires serial prompt-published tools must
-also require `HostTable` exposure and `max_in_flight == 1`.
+the maximum with the same tool-contract, implementation, and policy revisions and no wider tool or
+run limit.
+`ToolPlan.freeze(catalog, profile)` additionally proves that every specification and binding in the
+exposure-filtered catalogue view has exactly the contract, implementation, and policy revision
+authorized by its grant, that effective limits remain narrowed, and that the profile and plan
+revisions commit to their contents. Every `ToolBinding` must declare a nonempty owner-controlled
+`implementation_revision` covering its handler and transitive execution behavior. Behavior-affecting
+configuration belongs in `policy_inputs`; an implementation change not represented there requires
+a revision bump. It rejects a substituted catalogue before returning a plan.
+`FrozenToolPlan.is_tightening_of(maximum_profile)` first revalidates that complete plan integrity,
+then applies the authority proof; inconsistent directly constructed plans return `False`. Profile
+identity, profile revision, plan revision, and exposure may differ between a valid candidate and
+its maximum because narrowing and publication mode are separate concerns. Equivalent independently
+composed catalogues remain valid when their deterministic revisions match. A host that requires
+serial prompt-published tools must also require `HostTable` exposure and `max_in_flight == 1`.
 
 `publish_host_table(plan)` accepts only a frozen `HostTable` plan and returns an immutable typed
 `PromptSection`. `render_prompt(...)` performs the sole XML-like escaping step. The publication
 contains the exact ordered grants, documentation, schemas, effects, replay policies, effective
-limits, and revisions. An empty profile publishes an actual empty `tools` array; no placeholder
-capability is required. Publication is exact rather than silently truncated, so the consuming host
-must reject a table that exceeds its cumulative model-context limit.
+limits, and revisions. It revalidates the frozen plan and therefore cannot publish a mismatched
+contract, implementation, policy, filtered view, profile revision, or plan revision. An empty
+profile publishes an actual empty `tools` array; no placeholder capability is required. Publication
+is exact rather than silently truncated, so the consuming host must reject a table that exceeds its
+cumulative model-context limit.
 
 The durable execution boundary is asynchronous end to end. `BudgetState.reserve/settle` and every
 mutating `PositionRecorder` operation are `async`; `ToolExecutor.execute` awaits them and the bound
 handler. `terminalize_and_settle` still owns one atomic, idempotent terminal-result and budget-
 settlement commit. Durable adapters must use nonblocking persistence drivers. This is a hard cut:
 there is no synchronous recorder or budget fallback.
+
+Timeout handling is effect-sensitive after dispatch. A `Pure` or `Read` `ReDispatchable` timeout
+terminalizes as `DeadlineExceeded`. A `Write` `ReDispatchable` timeout instead leaves its durable
+dispatch claim occupied and raises `RecoveryRequired`; the host must reconcile the provider and
+may call `dispatch_abandoned` only after proving the effect absent and redispatch safe. `BilledOnce`
+timeouts retain their existing uncertain state. Write handlers must let an ambiguous post-dispatch
+`TimeoutError` reach the executor. They may normalize it to `BoundaryFailure("DeadlineExceeded")`
+only when they can prove no effect occurred; returning a terminal domain failure for an ambiguous
+provider outcome is invalid.
 
 ## Activation and security
 

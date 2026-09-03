@@ -272,6 +272,7 @@ _TOOL_SEARCH_BINDING = ToolBinding[ToolSearchInput, ToolSearchSuccess, NoDeclare
     spec=TOOL_SEARCH_SPEC,
     execute=Available(_search),
     replay_policy=ReplayPolicy.ReDispatchable,
+    implementation_revision="llm-tools-discovery-v1",
     policy_epoch=PolicyEpoch("discovery-v1"),
     policy_inputs={},
 )
@@ -279,6 +280,7 @@ _TOOL_READ_BINDING = ToolBinding[ToolReadInput, ToolReadSuccess, NoDeclaredError
     spec=TOOL_READ_SPEC,
     execute=Available(_read),
     replay_policy=ReplayPolicy.ReDispatchable,
+    implementation_revision="llm-tools-discovery-v1",
     policy_epoch=PolicyEpoch("discovery-v1"),
     policy_inputs={},
 )

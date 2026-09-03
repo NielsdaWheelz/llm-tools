@@ -181,6 +181,7 @@ def bind_brave_web_search(
         spec=WEB_SEARCH_SPEC,
         execute=Available(execute),
         replay_policy=ReplayPolicy.BilledOnce,
+        implementation_revision="llm-tools-web-search-v1",
         policy_epoch=PolicyEpoch("web-search-v1"),
         policy_inputs={"locale": "US/en", "max_results": max_results, "safe_search": "moderate"},
     )
@@ -217,6 +218,7 @@ def bind_web_read(
         spec=WEB_READ_SPEC,
         execute=Available(execute),
         replay_policy=ReplayPolicy.ReDispatchable,
+        implementation_revision="llm-tools-web-read-v1",
         policy_epoch=PolicyEpoch("web-read-v1"),
         policy_inputs={
             "accepted_media": [
@@ -241,6 +243,7 @@ def web_family(
         spec=WEB_SEARCH_SPEC,
         execute=Unavailable("Brave credential was not supplied by the host"),
         replay_policy=ReplayPolicy.BilledOnce,
+        implementation_revision="llm-tools-web-search-v1",
         policy_epoch=PolicyEpoch("web-search-v1"),
         policy_inputs={"locale": "US/en", "max_results": 10, "safe_search": "moderate"},
     )
@@ -248,6 +251,7 @@ def web_family(
         spec=WEB_READ_SPEC,
         execute=Unavailable("public Web reading is disabled by host policy"),
         replay_policy=ReplayPolicy.ReDispatchable,
+        implementation_revision="llm-tools-web-read-v1",
         policy_epoch=PolicyEpoch("web-read-v1"),
         policy_inputs={
             "accepted_media": [

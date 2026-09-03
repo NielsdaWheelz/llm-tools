@@ -112,6 +112,7 @@ ToolBinding(
     spec=spec,
     execute=Available(handler) | Unavailable(private_reason),
     replay_policy=ReplayPolicy.BilledOnce | ReplayPolicy.ReDispatchable,
+    implementation_revision=str,
     policy_epoch=PolicyEpoch,
     policy_inputs=CanonicalJsonObject,
 )
@@ -162,9 +163,18 @@ returns the declaration's owned input type or raises the public
 `SchemaDecodeError`. Its signature contains no execution context, so validation
 cannot occupy a position, access or reserve a budget, touch a recorder, or
 dispatch a handler. `FrozenCapabilityProfile.is_tightening_of(maximum)` proves a
-grant subset with exact shared contract/policy revisions and no wider per-tool
-or run limit; `FrozenToolPlan.is_tightening_of(maximum_profile)` applies the same
-authority proof to a plan. Exposure remains a separate publication choice.
+grant subset with exact shared contract, implementation, and policy revisions
+and no wider per-tool or run limit. `ToolPlan.freeze(catalog, profile)` proves
+before returning that the exact exposure-filtered catalogue view contains
+neither missing nor extra entries and that every exposed specification and
+binding matches the contract, implementation, and policy revision authorized
+by its grant. It also verifies tightened limits and recomputes the profile and
+plan revisions from their contents.
+`FrozenToolPlan.is_tightening_of(maximum_profile)` repeats that plan-integrity
+proof before applying the authority comparison, returning false for an
+inconsistent directly constructed plan. Equivalent separately composed
+catalogues remain valid when their deterministic revisions match. Exposure
+remains a separate publication choice.
 
 `ToolExecutor.execute(binding, raw_input: RawToolInput, context)` accepts one
 bounded tagged raw input from the provider adapter:
@@ -207,12 +217,16 @@ terminalizes `InvalidInput`. A rejected reservation records no budget charge,
 because a rejection cannot itself exceed the hard run ceiling it reports.
 Invalid input, unavailable, budget, and pre-dispatch deadline outcomes use zero
 attempts and actual encoded output bytes; settlement refunds unused
-attempt/output reservation. Every executor-owned failure after position
-occupancy terminalizes there. A
-pre-dispatch rejection dispatches nothing. After dispatch, a timeout or unknown
-outcome on `BilledOnce` stays uncertain and raises the host recovery signal; it
-is not mislabeled as `DeadlineExceeded`. Reservation, terminal result, and
-settlement are position-owned, so replay of a terminal result observes an
+attempt/output reservation. A pre-dispatch rejection dispatches nothing. After
+dispatch, a timeout or unknown outcome on `BilledOnce` stays uncertain and
+raises the host recovery signal; it is not mislabeled as `DeadlineExceeded`. A
+timeout on a `Pure` or `Read` `ReDispatchable` binding terminalizes as
+`DeadlineExceeded`. A timeout on a `Write` `ReDispatchable` binding instead
+leaves its durable dispatch claim occupied and raises `RecoveryRequired`; it
+does not terminalize, enter `BilledOnce` uncertainty, or re-admit itself. The
+host must reconcile the provider and may call `dispatch_abandoned` only after
+proving the effect absent and redispatch safe. Reservation, terminal result,
+and settlement are position-owned, so replay of a terminal result observes an
 already settled budget and cannot leak or double-settle it. The host recorder
 owns any transactional enlistment needed to commit a Write result with its
 domain mutation. Catalogue composition validates declared metadata only;
@@ -236,6 +250,12 @@ accounting. Discovery uses it for indistinguishable availability and output
 budget failures; Web uses it for deadline and output-budget failures.
 `tool.read` maps both an unknown and an ungranted id to identical
 `ToolUnavailable` before returning any catalogue fact.
+
+A `Write` handler must propagate an ambiguous post-dispatch `TimeoutError` so
+the executor preserves the occupied claim and signals host recovery. It may
+normalize a timeout to `BoundaryFailure("DeadlineExceeded")` only when it can
+prove no effect occurred. A false terminal boundary or domain failure would
+erase the ambiguity and is a handler defect.
 
 Success is:
 
@@ -297,13 +317,26 @@ payload, but it never becomes a `ToolId` or identity key.
 Each declaration's `tool_contract_revision` hashes its id, semantic input,
 success, and error schemas, effect, and limits. `documentation_revision` hashes
 presentation-only schema annotations plus summaries and prompt/help text. Each
-binding's `policy_revision` hashes its explicit owner-controlled policy epoch,
-canonical policy inputs, and replay policy; availability is live deployment
-state, not authority. A profile's `profile_revision` hashes its run limits,
-ordered grants, effective limits, and granted tool and binding-policy revisions.
+binding declares a nonempty owner-controlled `implementation_revision`, which
+covers its handler and transitive execution behavior; the library does not
+infer identity from a callable. Behavior-affecting configuration belongs in
+`policy_inputs`; an implementation change not represented there, including a
+transitive dependency change, requires an implementation-revision bump. The
+`policy_revision` hashes the explicit owner-controlled policy epoch, canonical
+policy inputs, and replay policy; availability is live deployment state, not
+authority. A profile's `profile_revision` hashes its run limits, ordered grants,
+effective limits, and granted tool, implementation, and binding-policy
+revisions.
 A plan's `plan_revision` hashes its profile revision and the full tagged
 exposure payload, including discoverable targets and publication ceiling.
-Presentation-only edits never invalidate authority or durable replay.
+Plan construction and every public proof or HostTable publication recompute
+these revisions and cross-check the filtered specifications and bindings against
+their grants; a different catalogue cannot substitute an effect, schema,
+declared limit, implementation, replay policy, or policy input under an
+authorized revision.
+Presentation-only edits never invalidate authority or durable replay, while the
+plan still requires its view specification and bound specification to share the
+same documentation revision.
 
 ## 6. General tools
 
@@ -427,6 +460,13 @@ own claim after a defect or cancellation. Library-owned HTTP retries are
 attempts inside one logical dispatch and consume its attempt budget; a host
 crash never restarts a `BilledOnce` dispatch.
 
+The same recovery gate applies when a `Write` `ReDispatchable` handler times
+out: `ToolExecutor` raises `RecoveryRequired` while preserving the nonterminal
+occupied dispatch. A replay before reconciliation cannot dispatch. The host
+may re-admit only through `dispatch_abandoned` after external evidence proves
+the effect absent and repeating it safe. `Pure` and `Read` `ReDispatchable`
+timeouts remain terminal `DeadlineExceeded` results.
+
 `PositionRecorder.dispatch_abandoned` is the narrow host recovery hook. It is
 not a model-call path: only the durable owner calls it after proving lease or
 operator recovery, and it carries the known attempts already spent so the next
@@ -447,9 +487,12 @@ Programmatic Tool Calling.
 `publish_host_table(plan)` accepts only a frozen `HostTable` plan and returns a
 typed immutable prompt section for `render_prompt`. It publishes the exact
 ordered grants, documentation, schemas, effects, replay policies, effective
-limits, and revisions. An empty profile produces a real empty table with no
-dummy tool. Publication never truncates silently; the consuming host enforces
-its cumulative context bound before provider I/O.
+limits, implementation identity, and revisions. Before rendering, it repeats
+the complete plan-integrity check, so a directly constructed plan, substituted
+catalogue view, or forged profile/plan revision fails closed. An empty profile
+produces a real empty table with no dummy tool. Publication never truncates
+silently; the consuming host enforces its cumulative context bound before
+provider I/O.
 
 Every granted `Write` binding, including HostTable calls, declares its durable
 effect requirements; `ToolExecutor.execute` requires the invocation to carry a
@@ -536,8 +579,8 @@ critical/replacement proof, then refactor without changing the proof.
 
 | Boundary | Primary proof and independent oracle |
 |---|---|
-| declaration/schema/catalog/profile | `tests/kernel/test_tool_contract.py`: hand-authored semantic/presentation schemas and profile table; description-only and enum-order-only edits preserve contract revision, description edits bump documentation revision, semantic enum edits bump contract revision; composes separate `web`/`tool` families and rejects mixed prefixes, duplicates, malformed/unbound grants, stale binding policy, over-budget, and mixed exposure |
-| execution/result/prompt | `tests/kernel/test_execution_and_prompt.py`: hand-authored recorder trace proves parsed/malformed raw-envelope digest before decode, occupied mismatch, completed replay, malformed/nonobject/schema-invalid terminalization, budget/unavailable terminalization, unavailable-without-uncertain, dispatch transition by replay policy, uncertain `BilledOnce` versus `ReDispatchable`, effect-id rejection, atomic/idempotent result-plus-settlement and crash/replay, exact attempt/output accounting, reviewed envelopes/escaping, and arbitrary guest JSON preservation |
+| declaration/schema/catalog/profile | `tests/kernel/test_tool_contract.py`: hand-authored semantic/presentation schemas and profile table; description-only and enum-order-only edits preserve contract revision, description edits bump documentation revision, semantic enum edits bump contract revision; composes separate `web`/`tool` families and rejects mixed prefixes, duplicates, malformed/unbound grants, stale binding policy, over-budget, and mixed exposure. `tests/kernel/test_frozen_plan_integrity.py`: cross-catalog Read-to-Write, schema, limit, implementation, replay, and policy substitution; direct inconsistent plan, missing/extra view, and forged revision rejection; equivalent-catalogue, narrowed Discoverable, Native, HostTable, and empty-plan validity. |
+| execution/result/prompt | `tests/kernel/test_execution_and_prompt.py`: hand-authored recorder trace proves parsed/malformed raw-envelope digest before decode, occupied mismatch, completed replay, malformed/nonobject/schema-invalid terminalization, budget/unavailable terminalization, unavailable-without-uncertain, dispatch transition by replay policy, uncertain `BilledOnce`, terminal `Pure`/`Read` `ReDispatchable` timeout, recovery-gated `Write` `ReDispatchable` timeout and redispatch, effect-id rejection, direct inconsistent-plan rejection before recorder access, atomic/idempotent result-plus-settlement and crash/replay, exact attempt/output accounting, reviewed envelopes/escaping, and arbitrary guest JSON preservation |
 | discovery | `tests/kernel/test_discovery.py`: fixed granted/target/nontarget/ungranted catalogue; search reveals only targets, unknown/ungranted/nontarget reads are identical, the target-only publication cap and plan revision are exact, and only successfully read targets publish on the next reference-host turn |
 | Web search | `tests/conformance/test_web_search.py`: fixed Brave transcripts; normalized identity, attempts, limits, and errors |
 | Web read | `tests/conformance/test_web_read.py`: test-owned loopback servers and resolver/peer fixtures for cross-authority redirect Host/SNI, rebinding, private address, peer mismatch, MIME, size, compression, timeout, evidence, and ambient-proxy rejection |
@@ -581,7 +624,10 @@ After all consumers are green, run a one-time residue audit for
    binding-policy/documentation revisions. Explicitly unavailable bindings
    preserve catalogue shape and fail before dispatch without blocking boot.
 4. Profiles are closed authority; Native, Discoverable, and HostTable plans
-   select one mutually exclusive exposure and defect without fallback.
+   select one mutually exclusive exposure and defect without fallback. Freeze,
+   tightening proof, execution, and HostTable publication reject any catalogue
+   view, contract/implementation/policy grant, effective limit, or profile/plan
+   revision inconsistency before provider or handler I/O.
 5. `tool.search/read` reveal only the frozen intersection of grants and
    Discoverable targets; unknown, ungranted, and nontarget ids are
    indistinguishable, and the reference host proves target-capped
@@ -592,8 +638,9 @@ After all consumers are green, run a one-time residue audit for
    actual peer/redirect/streaming seam against SSRF and resource exhaustion;
    its identical durable invocation is `ReDispatchable`.
 8. Every bounded raw call is durably digested before typed decode; expected
-   boundary failures terminalize at that position, and terminal result plus
-   budget settlement is atomic/idempotent. Unexpected failures raise.
+   boundary failures terminalize at that position except ambiguous dispatched
+   Writes, which preserve their claim for reconciliation. Terminal result plus
+   budget settlement is atomic/idempotent, and unexpected failures raise.
 9. The provider-runtime integration proves reversible aliases and structurally
    exact native values; only canonical dotted ids are executable identity, with
    a bounded raw rejected name permitted solely as non-authoritative audit data.
