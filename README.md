@@ -92,6 +92,32 @@ budget, recovery, or production storage implementations. A production host suppl
 Hosts persist `raw_input_digest(...)` as invocation identity; a binding may raise
 `BoundaryFailure` only for the four executor-owned boundary outcomes.
 
+## Host integration
+
+`validate_tool_input(binding, arguments)` is the public pure validation boundary. It returns the
+binding's declared input type or raises `SchemaDecodeError`; it has no execution context and cannot
+occupy a position, inspect or reserve a budget, touch a recorder, or dispatch a handler.
+
+`FrozenCapabilityProfile.is_tightening_of(maximum)` proves that every candidate grant is present in
+the maximum with the same tool-contract and policy revisions and no wider tool or run limit.
+`FrozenToolPlan.is_tightening_of(maximum_profile)` applies the same authority proof to a plan.
+Profile identity, profile revision, plan revision, and exposure may differ because narrowing and
+publication mode are separate concerns. A host that requires serial prompt-published tools must
+also require `HostTable` exposure and `max_in_flight == 1`.
+
+`publish_host_table(plan)` accepts only a frozen `HostTable` plan and returns an immutable typed
+`PromptSection`. `render_prompt(...)` performs the sole XML-like escaping step. The publication
+contains the exact ordered grants, documentation, schemas, effects, replay policies, effective
+limits, and revisions. An empty profile publishes an actual empty `tools` array; no placeholder
+capability is required. Publication is exact rather than silently truncated, so the consuming host
+must reject a table that exceeds its cumulative model-context limit.
+
+The durable execution boundary is asynchronous end to end. `BudgetState.reserve/settle` and every
+mutating `PositionRecorder` operation are `async`; `ToolExecutor.execute` awaits them and the bound
+handler. `terminalize_and_settle` still owns one atomic, idempotent terminal-result and budget-
+settlement commit. Durable adapters must use nonblocking persistence drivers. This is a hard cut:
+there is no synchronous recorder or budget fallback.
+
 ## Activation and security
 
 Importing `llm_tools` grants nothing: the package ships no ambient registry or default profile, so

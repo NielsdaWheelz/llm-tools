@@ -332,7 +332,7 @@ async def test_billed_once_timeout_stays_uncertain_while_redispatchable_terminal
         await ToolExecutor.execute(billed, ParsedJson({"query": "hello"}), billed_context)
     assert billed_calls == 1
     with pytest.raises(ValueError, match="ReDispatchable"):
-        recorder.dispatch_abandoned(
+        await recorder.dispatch_abandoned(
             position=billed_context.position,
             replay_policy=ReplayPolicy.BilledOnce,
             actual_attempts=1,
@@ -354,6 +354,31 @@ async def test_billed_once_timeout_stays_uncertain_while_redispatchable_terminal
     settlement = recorder.record(redispatchable_context.position).settlement
     assert settlement is not None
     assert settlement.actual_attempts == LIMITS.max_attempts
+
+
+@pytest.mark.asyncio
+async def test_billed_once_cancellation_after_dispatch_stays_uncertain() -> None:
+    calls = 0
+
+    async def cancel(value: Input, context: ExecutionContext) -> HandlerSuccess[Success]:
+        nonlocal calls
+        calls += 1
+        raise asyncio.CancelledError
+
+    binding = _binding(cancel, replay_policy=ReplayPolicy.BilledOnce)
+    recorder = InMemoryPositionRecorder()
+    context = _context(binding, recorder=recorder, position="turn-3/billed-cancelled")
+    raw = ParsedJson({"query": "hello"})
+
+    with pytest.raises(asyncio.CancelledError):
+        await ToolExecutor.execute(binding, raw, context)
+    record = recorder.record(context.position)
+    assert record.uncertain is True
+    assert record.in_flight is False
+
+    with pytest.raises(RecoveryRequired, match="uncertain"):
+        await ToolExecutor.execute(binding, raw, context)
+    assert calls == 1
 
 
 @pytest.mark.asyncio
@@ -385,13 +410,13 @@ async def test_redispatchable_requires_explicit_abandoned_dispatch_recovery(
     assert recorder.record(context.position).in_flight is True
 
     with pytest.raises(ValueError, match="verified operator or lease recovery"):
-        recorder.dispatch_abandoned(
+        await recorder.dispatch_abandoned(
             position=context.position,
             replay_policy=ReplayPolicy.ReDispatchable,
             actual_attempts=1,
             lease_recovered=False,
         )
-    recorder.dispatch_abandoned(
+    await recorder.dispatch_abandoned(
         position=context.position,
         replay_policy=ReplayPolicy.ReDispatchable,
         actual_attempts=1,
@@ -407,7 +432,7 @@ async def test_redispatchable_requires_explicit_abandoned_dispatch_recovery(
     assert record.settlement.actual_attempts == 2
     assert seen_attempt_ceilings == [2, 1]
     with pytest.raises(ValueError, match="terminal"):
-        recorder.dispatch_abandoned(
+        await recorder.dispatch_abandoned(
             position=context.position,
             replay_policy=ReplayPolicy.ReDispatchable,
             actual_attempts=0,
@@ -437,7 +462,7 @@ async def test_recovered_attempts_remain_charged_when_redispatch_stops_before_di
 
     with pytest.raises(RuntimeError, match="abandoned"):
         await ToolExecutor.execute(binding, raw, context)
-    recorder.dispatch_abandoned(
+    await recorder.dispatch_abandoned(
         position=context.position,
         replay_policy=ReplayPolicy.ReDispatchable,
         actual_attempts=1,
@@ -577,7 +602,7 @@ async def test_terminal_result_and_budget_settlement_commit_once_and_preserve_te
 @pytest.mark.asyncio
 async def test_billed_once_recovery_never_redispatches_after_commit_path_crash() -> None:
     class CrashBeforeCommit(InMemoryPositionRecorder):
-        def terminalize_and_settle(self, **kwargs):  # type: ignore[no-untyped-def]
+        async def terminalize_and_settle(self, **kwargs):  # type: ignore[no-untyped-def]
             raise RuntimeError("simulated crash before atomic terminal commit")
 
     calls = 0
@@ -610,13 +635,13 @@ async def test_atomic_dispatch_claim_prevents_duplicate_concurrent_effects(
     replay_policy: ReplayPolicy,
 ) -> None:
     class PausingClaimRecorder(InMemoryPositionRecorder):
-        def dispatch_started(
+        async def dispatch_started(
             self,
             *,
             position: InvocationPosition,
             replay_policy: ReplayPolicy,
         ) -> PositionState:
-            state = super().dispatch_started(
+            state = await super().dispatch_started(
                 position=position,
                 replay_policy=replay_policy,
             )
@@ -771,7 +796,7 @@ async def test_reservation_conflicts_defect_instead_of_becoming_budget_failures(
         raise AssertionError(f"must not dispatch: {value!r} {context!r}")
 
     class ConflictingReservationRecorder(InMemoryPositionRecorder):
-        def reserve(self, **kwargs):  # type: ignore[no-untyped-def]
+        async def reserve(self, **kwargs):  # type: ignore[no-untyped-def]
             raise ValueError("durable reservation mismatch")
 
     binding = _binding(handler)
@@ -782,7 +807,7 @@ async def test_reservation_conflicts_defect_instead_of_becoming_budget_failures(
 
     position = InvocationPosition("turn-5/direct-reservation-conflict")
     direct = InMemoryPositionRecorder()
-    direct.occupy(
+    await direct.occupy(
         position=position,
         tool_id=binding.spec.id,
         tool_contract_revision=binding.spec.tool_contract_revision,
@@ -793,9 +818,9 @@ async def test_reservation_conflicts_defect_instead_of_becoming_budget_failures(
     )
     budgets = InMemoryBudgetState(RUN_LIMITS)
     first = Reservation(calls=1, input_bytes=10, max_attempts=2, max_output_bytes=100)
-    assert direct.reserve(position=position, budgets=budgets, reservation=first) is True
+    assert await direct.reserve(position=position, budgets=budgets, reservation=first) is True
     with pytest.raises(ValueError, match="reservation"):
-        direct.reserve(
+        await direct.reserve(
             position=position,
             budgets=budgets,
             reservation=replace(first, max_attempts=1),

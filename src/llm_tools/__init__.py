@@ -52,6 +52,7 @@ from .execution import (
     ToolResult,
     raw_input_digest,
 )
+from .host_table import publish_host_table
 from .profiles import (
     CapabilityProfile,
     Discoverable,
@@ -77,7 +78,8 @@ from .prompt_sections import (
     PromptText,
     render_prompt,
 )
-from .schema import canonical_json_bytes
+from .schema import SchemaDecodeError, canonical_json_bytes
+from .validation import validate_tool_input
 from .web.brave import BraveSearchProvider
 from .web.contracts import (
     InvalidUpstreamResponse,
@@ -161,6 +163,7 @@ __all__ = [
     "Reservation",
     "RunLimits",
     "Scope",
+    "SchemaDecodeError",
     "Settlement",
     "SafeWebReader",
     "SystemResolver",
@@ -200,9 +203,11 @@ __all__ = [
     "bind_brave_web_search",
     "bind_web_read",
     "canonical_json_bytes",
+    "publish_host_table",
     "published_tool_ids",
     "raw_input_digest",
     "render_prompt",
     "sha256_hex",
+    "validate_tool_input",
     "web_family",
 ]
