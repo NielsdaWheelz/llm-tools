@@ -207,12 +207,16 @@ terminalizes `InvalidInput`. A rejected reservation records no budget charge,
 because a rejection cannot itself exceed the hard run ceiling it reports.
 Invalid input, unavailable, budget, and pre-dispatch deadline outcomes use zero
 attempts and actual encoded output bytes; settlement refunds unused
-attempt/output reservation. Every executor-owned failure after position
-occupancy terminalizes there. A
-pre-dispatch rejection dispatches nothing. After dispatch, a timeout or unknown
-outcome on `BilledOnce` stays uncertain and raises the host recovery signal; it
-is not mislabeled as `DeadlineExceeded`. Reservation, terminal result, and
-settlement are position-owned, so replay of a terminal result observes an
+attempt/output reservation. A pre-dispatch rejection dispatches nothing. After
+dispatch, a timeout or unknown outcome on `BilledOnce` stays uncertain and
+raises the host recovery signal; it is not mislabeled as `DeadlineExceeded`. A
+timeout on a `Pure` or `Read` `ReDispatchable` binding terminalizes as
+`DeadlineExceeded`. A timeout on a `Write` `ReDispatchable` binding instead
+leaves its durable dispatch claim occupied and raises `RecoveryRequired`; it
+does not terminalize, enter `BilledOnce` uncertainty, or re-admit itself. The
+host must reconcile the provider and may call `dispatch_abandoned` only after
+proving the effect absent and redispatch safe. Reservation, terminal result,
+and settlement are position-owned, so replay of a terminal result observes an
 already settled budget and cannot leak or double-settle it. The host recorder
 owns any transactional enlistment needed to commit a Write result with its
 domain mutation. Catalogue composition validates declared metadata only;
@@ -236,6 +240,12 @@ accounting. Discovery uses it for indistinguishable availability and output
 budget failures; Web uses it for deadline and output-budget failures.
 `tool.read` maps both an unknown and an ungranted id to identical
 `ToolUnavailable` before returning any catalogue fact.
+
+A `Write` handler must propagate an ambiguous post-dispatch `TimeoutError` so
+the executor preserves the occupied claim and signals host recovery. It may
+normalize a timeout to `BoundaryFailure("DeadlineExceeded")` only when it can
+prove no effect occurred. A false terminal boundary or domain failure would
+erase the ambiguity and is a handler defect.
 
 Success is:
 
@@ -427,6 +437,13 @@ own claim after a defect or cancellation. Library-owned HTTP retries are
 attempts inside one logical dispatch and consume its attempt budget; a host
 crash never restarts a `BilledOnce` dispatch.
 
+The same recovery gate applies when a `Write` `ReDispatchable` handler times
+out: `ToolExecutor` raises `RecoveryRequired` while preserving the nonterminal
+occupied dispatch. A replay before reconciliation cannot dispatch. The host
+may re-admit only through `dispatch_abandoned` after external evidence proves
+the effect absent and repeating it safe. `Pure` and `Read` `ReDispatchable`
+timeouts remain terminal `DeadlineExceeded` results.
+
 `PositionRecorder.dispatch_abandoned` is the narrow host recovery hook. It is
 not a model-call path: only the durable owner calls it after proving lease or
 operator recovery, and it carries the known attempts already spent so the next
@@ -537,7 +554,7 @@ critical/replacement proof, then refactor without changing the proof.
 | Boundary | Primary proof and independent oracle |
 |---|---|
 | declaration/schema/catalog/profile | `tests/kernel/test_tool_contract.py`: hand-authored semantic/presentation schemas and profile table; description-only and enum-order-only edits preserve contract revision, description edits bump documentation revision, semantic enum edits bump contract revision; composes separate `web`/`tool` families and rejects mixed prefixes, duplicates, malformed/unbound grants, stale binding policy, over-budget, and mixed exposure |
-| execution/result/prompt | `tests/kernel/test_execution_and_prompt.py`: hand-authored recorder trace proves parsed/malformed raw-envelope digest before decode, occupied mismatch, completed replay, malformed/nonobject/schema-invalid terminalization, budget/unavailable terminalization, unavailable-without-uncertain, dispatch transition by replay policy, uncertain `BilledOnce` versus `ReDispatchable`, effect-id rejection, atomic/idempotent result-plus-settlement and crash/replay, exact attempt/output accounting, reviewed envelopes/escaping, and arbitrary guest JSON preservation |
+| execution/result/prompt | `tests/kernel/test_execution_and_prompt.py`: hand-authored recorder trace proves parsed/malformed raw-envelope digest before decode, occupied mismatch, completed replay, malformed/nonobject/schema-invalid terminalization, budget/unavailable terminalization, unavailable-without-uncertain, dispatch transition by replay policy, uncertain `BilledOnce`, terminal `Pure`/`Read` `ReDispatchable` timeout, recovery-gated `Write` `ReDispatchable` timeout and redispatch, effect-id rejection, atomic/idempotent result-plus-settlement and crash/replay, exact attempt/output accounting, reviewed envelopes/escaping, and arbitrary guest JSON preservation |
 | discovery | `tests/kernel/test_discovery.py`: fixed granted/target/nontarget/ungranted catalogue; search reveals only targets, unknown/ungranted/nontarget reads are identical, the target-only publication cap and plan revision are exact, and only successfully read targets publish on the next reference-host turn |
 | Web search | `tests/conformance/test_web_search.py`: fixed Brave transcripts; normalized identity, attempts, limits, and errors |
 | Web read | `tests/conformance/test_web_read.py`: test-owned loopback servers and resolver/peer fixtures for cross-authority redirect Host/SNI, rebinding, private address, peer mismatch, MIME, size, compression, timeout, evidence, and ambient-proxy rejection |
@@ -592,8 +609,9 @@ After all consumers are green, run a one-time residue audit for
    actual peer/redirect/streaming seam against SSRF and resource exhaustion;
    its identical durable invocation is `ReDispatchable`.
 8. Every bounded raw call is durably digested before typed decode; expected
-   boundary failures terminalize at that position, and terminal result plus
-   budget settlement is atomic/idempotent. Unexpected failures raise.
+   boundary failures terminalize at that position except ambiguous dispatched
+   Writes, which preserve their claim for reconciliation. Terminal result plus
+   budget settlement is atomic/idempotent, and unexpected failures raise.
 9. The provider-runtime integration proves reversible aliases and structurally
    exact native values; only canonical dotted ids are executable identity, with
    a bounded raw rejected name permitted solely as non-authoritative audit data.

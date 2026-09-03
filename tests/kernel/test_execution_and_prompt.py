@@ -312,7 +312,7 @@ async def test_budget_and_unavailable_fail_before_dispatch_without_uncertainty()
 
 
 @pytest.mark.asyncio
-async def test_billed_once_timeout_stays_uncertain_while_redispatchable_terminalizes() -> None:
+async def test_billed_once_timeout_stays_uncertain() -> None:
     billed_calls = 0
 
     async def timeout(value: Input, context: ExecutionContext) -> HandlerSuccess[Success]:
@@ -339,11 +339,25 @@ async def test_billed_once_timeout_stays_uncertain_while_redispatchable_terminal
             lease_recovered=True,
         )
 
-    redispatchable = _binding(timeout, replay_policy=ReplayPolicy.ReDispatchable)
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("effect", [ToolEffect.Pure, ToolEffect.Read])
+async def test_redispatchable_nonwrite_timeout_terminalizes_deadline(
+    effect: ToolEffect,
+) -> None:
+    async def timeout(value: Input, context: ExecutionContext) -> HandlerSuccess[Success]:
+        raise TimeoutError(f"unknown provider outcome: {value.query} in {context.scope}")
+
+    redispatchable = _binding(
+        timeout,
+        replay_policy=ReplayPolicy.ReDispatchable,
+        effect=effect,
+    )
+    recorder = InMemoryPositionRecorder()
     redispatchable_context = _context(
         redispatchable,
         recorder=recorder,
-        position="turn-3/redispatchable",
+        position=f"turn-3/redispatchable-{effect.value}",
     )
     assert await ToolExecutor.execute(
         redispatchable,
@@ -354,6 +368,81 @@ async def test_billed_once_timeout_stays_uncertain_while_redispatchable_terminal
     settlement = recorder.record(redispatchable_context.position).settlement
     assert settlement is not None
     assert settlement.actual_attempts == LIMITS.max_attempts
+
+
+@pytest.mark.asyncio
+async def test_redispatchable_write_timeout_requires_reconciliation_before_redispatch() -> None:
+    calls = 0
+    seen_attempt_ceilings: list[int] = []
+
+    async def timeout_then_succeed(
+        value: Input, context: ExecutionContext
+    ) -> HandlerSuccess[Success]:
+        nonlocal calls
+        calls += 1
+        seen_attempt_ceilings.append(context.grant.limits.max_attempts)
+        if calls == 1:
+            raise TimeoutError("provider outcome is unknown")
+        return HandlerSuccess(Success(text=value.query), actual_attempts=1)
+
+    binding = _binding(
+        timeout_then_succeed,
+        replay_policy=ReplayPolicy.ReDispatchable,
+        effect=ToolEffect.Write,
+    )
+    recorder = InMemoryPositionRecorder()
+    budgets = InMemoryBudgetState(RUN_LIMITS)
+    context = _context(
+        binding,
+        recorder=recorder,
+        position="turn-3/redispatchable-write-timeout",
+        budgets=budgets,
+        effect_id=EffectId("effect-write-timeout"),
+    )
+    raw = ParsedJson({"query": "hello"})
+
+    with pytest.raises(RecoveryRequired, match="requires reconciliation") as timed_out:
+        await ToolExecutor.execute(binding, raw, context)
+    assert isinstance(timed_out.value.__cause__, TimeoutError)
+    record = recorder.record(context.position)
+    assert record.terminal_result is None
+    assert record.settlement is None
+    assert record.uncertain is False
+    assert record.in_flight is True
+    assert record.dispatches == 1
+    assert budgets.reserved_external_attempts == LIMITS.max_attempts
+    assert calls == 1
+
+    with pytest.raises(RecoveryRequired, match="uncertain"):
+        await ToolExecutor.execute(binding, raw, context)
+    assert recorder.record(context.position).dispatches == 1
+    assert calls == 1
+
+    with pytest.raises(ValueError, match="verified operator or lease recovery"):
+        await recorder.dispatch_abandoned(
+            position=context.position,
+            replay_policy=ReplayPolicy.ReDispatchable,
+            actual_attempts=1,
+            lease_recovered=False,
+        )
+    await recorder.dispatch_abandoned(
+        position=context.position,
+        replay_policy=ReplayPolicy.ReDispatchable,
+        actual_attempts=1,
+        lease_recovered=True,
+    )
+
+    assert await ToolExecutor.execute(binding, raw, context) == {
+        "type": "Success",
+        "value": {"text": "hello"},
+    }
+    record = recorder.record(context.position)
+    assert record.dispatches == 2
+    assert record.terminal_commits == 1
+    assert record.settlement is not None
+    assert record.settlement.actual_attempts == 2
+    assert budgets.actual_external_attempts == 2
+    assert seen_attempt_ceilings == [2, 1]
 
 
 @pytest.mark.asyncio

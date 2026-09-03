@@ -118,6 +118,15 @@ handler. `terminalize_and_settle` still owns one atomic, idempotent terminal-res
 settlement commit. Durable adapters must use nonblocking persistence drivers. This is a hard cut:
 there is no synchronous recorder or budget fallback.
 
+Timeout handling is effect-sensitive after dispatch. A `Pure` or `Read` `ReDispatchable` timeout
+terminalizes as `DeadlineExceeded`. A `Write` `ReDispatchable` timeout instead leaves its durable
+dispatch claim occupied and raises `RecoveryRequired`; the host must reconcile the provider and
+may call `dispatch_abandoned` only after proving the effect absent and redispatch safe. `BilledOnce`
+timeouts retain their existing uncertain state. Write handlers must let an ambiguous post-dispatch
+`TimeoutError` reach the executor. They may normalize it to `BoundaryFailure("DeadlineExceeded")`
+only when they can prove no effect occurred; returning a terminal domain failure for an ambiguous
+provider outcome is invalid.
+
 ## Activation and security
 
 Importing `llm_tools` grants nothing: the package ships no ambient registry or default profile, so

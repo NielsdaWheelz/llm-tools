@@ -222,6 +222,8 @@ class ExecutorConfigurationDefect(RuntimeError):
 
 
 class RecoveryRequired(RuntimeError):
+    """Host-only signal that an occupied position requires reconciliation."""
+
     pass
 
 
@@ -382,6 +384,10 @@ class ToolExecutor:
             if binding.replay_policy is ReplayPolicy.BilledOnce:
                 await context.recorder.uncertain(position=context.position)
                 raise RecoveryRequired("BilledOnce tool outcome is uncertain") from exc
+            if binding.spec.effect is ToolEffect.Write:
+                raise RecoveryRequired(
+                    "ReDispatchable Write outcome requires reconciliation"
+                ) from exc
             return await _terminalize_boundary(
                 "DeadlineExceeded",
                 context,
