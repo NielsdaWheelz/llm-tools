@@ -160,6 +160,35 @@ class FrozenCapabilityProfile:
         except KeyError as exc:
             raise KeyError(f"tool is not granted: {tool_id!s}") from exc
 
+    def is_tightening_of(self, maximum: FrozenCapabilityProfile) -> bool:
+        """Return whether this frozen authority is no wider than ``maximum``.
+
+        Profile identities and revisions may differ; shared grants require the
+        same tool-contract and policy revisions.
+        """
+
+        if not (
+            self.run_limits.max_calls <= maximum.run_limits.max_calls
+            and self.run_limits.max_external_attempts <= maximum.run_limits.max_external_attempts
+            and self.run_limits.max_input_bytes <= maximum.run_limits.max_input_bytes
+            and self.run_limits.max_output_bytes <= maximum.run_limits.max_output_bytes
+            and self.run_limits.max_in_flight <= maximum.run_limits.max_in_flight
+            and self.run_limits.max_elapsed_seconds <= maximum.run_limits.max_elapsed_seconds
+        ):
+            return False
+        for grant in self.ordered_grants:
+            try:
+                maximum_grant = maximum.grants[grant.id]
+            except KeyError:
+                return False
+            if (
+                grant.tool_contract_revision != maximum_grant.tool_contract_revision
+                or grant.policy_revision != maximum_grant.policy_revision
+                or not grant.limits.is_tightening_of(maximum_grant.limits)
+            ):
+                return False
+        return True
+
 
 @dataclass(frozen=True, slots=True)
 class Native:
@@ -278,6 +307,11 @@ class FrozenToolPlan:
 
     def grant(self, tool_id: ToolId) -> EffectiveToolGrant:
         return self.profile.grant(tool_id)
+
+    def is_tightening_of(self, maximum_profile: FrozenCapabilityProfile) -> bool:
+        """Prove authority tightening; exposure is a separate publication choice."""
+
+        return self.profile.is_tightening_of(maximum_profile)
 
 
 def _revision(value: JsonValue) -> str:

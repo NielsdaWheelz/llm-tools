@@ -22,9 +22,9 @@ from llm_tools.schema import (
     JsonValue,
     SchemaDecodeError,
     canonical_json_bytes,
-    strict_decode,
     strict_encode,
 )
+from llm_tools.validation import validate_tool_input
 
 
 class InvocationPosition(str):
@@ -85,22 +85,26 @@ class PositionState:
 
 
 class BudgetState(Protocol):
+    """Run budget whose position-owned mutations are asynchronous."""
+
     @property
     def limits(self) -> RunLimits: ...
 
     @property
     def remaining_elapsed_seconds(self) -> float: ...
 
-    def reserve(self, position: InvocationPosition, reservation: Reservation) -> bool: ...
+    async def reserve(self, position: InvocationPosition, reservation: Reservation) -> bool: ...
 
-    def settle(self, position: InvocationPosition, settlement: Settlement) -> None: ...
+    async def settle(self, position: InvocationPosition, settlement: Settlement) -> None: ...
 
 
 class PositionRecorder(Protocol):
+    """Asynchronous position recorder; durable implementations must not block the loop."""
+
     @property
     def durable(self) -> bool: ...
 
-    def occupy(
+    async def occupy(
         self,
         *,
         position: InvocationPosition,
@@ -112,7 +116,7 @@ class PositionRecorder(Protocol):
         replay_policy: ReplayPolicy,
     ) -> PositionState: ...
 
-    def reserve(
+    async def reserve(
         self,
         *,
         position: InvocationPosition,
@@ -120,14 +124,14 @@ class PositionRecorder(Protocol):
         reservation: Reservation,
     ) -> bool: ...
 
-    def dispatch_started(
+    async def dispatch_started(
         self,
         *,
         position: InvocationPosition,
         replay_policy: ReplayPolicy,
     ) -> PositionState: ...
 
-    def dispatch_abandoned(
+    async def dispatch_abandoned(
         self,
         *,
         position: InvocationPosition,
@@ -138,16 +142,18 @@ class PositionRecorder(Protocol):
         """Re-admit verified abandoned ReDispatchable work outside normal execution."""
         ...
 
-    def uncertain(self, *, position: InvocationPosition) -> None: ...
+    async def uncertain(self, *, position: InvocationPosition) -> None: ...
 
-    def terminalize_and_settle(
+    async def terminalize_and_settle(
         self,
         *,
         position: InvocationPosition,
         budgets: BudgetState,
         result: ToolResult,
         settlement: Settlement,
-    ) -> ToolResult: ...
+    ) -> ToolResult:
+        """Idempotently commit the terminal result and budget settlement atomically."""
+        ...
 
 
 class Cancellation(Protocol):
@@ -241,7 +247,7 @@ class ToolExecutor:
         _verify_context(binding, context)
         digest = raw_input_digest(raw_input)
         try:
-            position = context.recorder.occupy(
+            position = await context.recorder.occupy(
                 position=context.position,
                 tool_id=binding.spec.id,
                 tool_contract_revision=binding.spec.tool_contract_revision,
@@ -266,7 +272,7 @@ class ToolExecutor:
             max_output_bytes=limits.max_output_bytes,
         )
         try:
-            reserved = context.recorder.reserve(
+            reserved = await context.recorder.reserve(
                 position=context.position,
                 budgets=context.budgets,
                 reservation=reservation,
@@ -274,28 +280,24 @@ class ToolExecutor:
         except ValueError as exc:
             raise PositionConflictDefect("position budget reservation conflicts") from exc
         if not reserved:
-            return _terminalize_boundary("BudgetExceeded", context)
+            return await _terminalize_boundary("BudgetExceeded", context)
 
         if len(raw_bytes) > limits.max_input_bytes:
-            return _terminalize_boundary("BudgetExceeded", context)
+            return await _terminalize_boundary("BudgetExceeded", context)
 
         if isinstance(raw_input, MalformedJson):
-            return _terminalize_boundary("InvalidInput", context)
+            return await _terminalize_boundary("InvalidInput", context)
         try:
-            decoded = strict_decode(
-                binding.spec.input_type,
-                binding.spec.input_schema,
-                raw_input.value,
-            )
+            decoded = validate_tool_input(binding, raw_input.value)
         except SchemaDecodeError:
-            return _terminalize_boundary("InvalidInput", context)
+            return await _terminalize_boundary("InvalidInput", context)
 
         if isinstance(binding.execute, Unavailable):
             context.telemetry.event(
                 "tool.unavailable",
                 {"tool_id": str(binding.spec.id)},
             )
-            return _terminalize_boundary(
+            return await _terminalize_boundary(
                 "ToolUnavailable",
                 context,
                 actual_attempts=position.actual_attempts,
@@ -304,7 +306,7 @@ class ToolExecutor:
         if not math.isfinite(remaining_elapsed):
             raise ExecutorConfigurationDefect("run budget returned a non-finite deadline")
         if context.cancellation.cancelled or remaining_elapsed <= 0:
-            return _terminalize_boundary(
+            return await _terminalize_boundary(
                 "DeadlineExceeded",
                 context,
                 actual_attempts=position.actual_attempts,
@@ -317,13 +319,13 @@ class ToolExecutor:
             )
 
         if position.actual_attempts > 0 and position.actual_attempts >= limits.max_attempts:
-            return _terminalize_boundary(
+            return await _terminalize_boundary(
                 "BudgetExceeded",
                 context,
                 actual_attempts=position.actual_attempts,
             )
 
-        dispatch = context.recorder.dispatch_started(
+        dispatch = await context.recorder.dispatch_started(
             position=context.position,
             replay_policy=binding.replay_policy,
         )
@@ -333,7 +335,7 @@ class ToolExecutor:
             raise RecoveryRequired("tool position has an uncertain outcome")
         prior_attempts = dispatch.actual_attempts
         if prior_attempts != position.actual_attempts:
-            return _raise_dispatch_defect(
+            return await _raise_dispatch_defect(
                 binding,
                 context,
                 RuntimeError("position attempt accounting changed before dispatch"),
@@ -351,13 +353,13 @@ class ToolExecutor:
                 outcome = await binding.execute.handler(decoded, dispatch_context)
         except BoundaryFailure as failure:
             try:
-                return _terminalize_boundary(
+                return await _terminalize_boundary(
                     failure.error_type,
                     context,
                     actual_attempts=prior_attempts + failure.actual_attempts,
                 )
             except Exception as exc:
-                return _raise_dispatch_defect(binding, context, exc)
+                return await _raise_dispatch_defect(binding, context, exc)
         except DeclaredToolFailure as failure:
             try:
                 if binding.spec.error_type is NoDeclaredError:
@@ -369,28 +371,28 @@ class ToolExecutor:
                     failure.error,
                 )
                 result = _failure_result(encoded_error)
-                return _terminalize_result(
+                return await _terminalize_result(
                     result,
                     prior_attempts + failure.actual_attempts,
                     context,
                 )
             except Exception as exc:
-                return _raise_dispatch_defect(binding, context, exc)
+                return await _raise_dispatch_defect(binding, context, exc)
         except TimeoutError as exc:
             if binding.replay_policy is ReplayPolicy.BilledOnce:
-                context.recorder.uncertain(position=context.position)
+                await context.recorder.uncertain(position=context.position)
                 raise RecoveryRequired("BilledOnce tool outcome is uncertain") from exc
-            return _terminalize_boundary(
+            return await _terminalize_boundary(
                 "DeadlineExceeded",
                 context,
                 actual_attempts=prior_attempts + remaining_attempts,
             )
         except asyncio.CancelledError:
             if binding.replay_policy is ReplayPolicy.BilledOnce:
-                context.recorder.uncertain(position=context.position)
+                await context.recorder.uncertain(position=context.position)
             raise
         except Exception as exc:
-            return _raise_dispatch_defect(binding, context, exc)
+            return await _raise_dispatch_defect(binding, context, exc)
 
         try:
             if not isinstance(outcome, HandlerSuccess):
@@ -401,13 +403,13 @@ class ToolExecutor:
                 outcome.value,
             )
             result: ToolResult = {"type": "Success", "value": encoded_success}
-            return _terminalize_result(
+            return await _terminalize_result(
                 result,
                 prior_attempts + outcome.actual_attempts,
                 context,
             )
         except Exception as exc:
-            return _raise_dispatch_defect(binding, context, exc)
+            return await _raise_dispatch_defect(binding, context, exc)
 
 
 def _verify_context(
@@ -454,31 +456,31 @@ def _failure_result(error: JsonValue) -> ToolResult:
     return {"type": "Failure", "error": error}
 
 
-def _terminalize_boundary(
+async def _terminalize_boundary(
     error_type: str,
     context: ExecutionContext,
     *,
     actual_attempts: int = 0,
 ) -> ToolResult:
-    return _terminalize_result(
+    return await _terminalize_result(
         {"type": "Failure", "error": {"type": error_type}},
         actual_attempts,
         context,
     )
 
 
-def _raise_dispatch_defect(
+async def _raise_dispatch_defect(
     binding: ToolBinding[object, object, object],
     context: ExecutionContext,
     defect: BaseException,
 ) -> ToolResult:
     if binding.replay_policy is ReplayPolicy.BilledOnce:
-        context.recorder.uncertain(position=context.position)
+        await context.recorder.uncertain(position=context.position)
         raise RecoveryRequired("BilledOnce tool outcome is uncertain") from defect
     raise defect
 
 
-def _terminalize_result(
+async def _terminalize_result(
     result: ToolResult,
     actual_attempts: int,
     context: ExecutionContext,
@@ -493,7 +495,7 @@ def _terminalize_result(
     if output_bytes > context.grant.limits.max_output_bytes:
         raise RuntimeError("owned result exceeds its declared output limit")
     try:
-        return context.recorder.terminalize_and_settle(
+        return await context.recorder.terminalize_and_settle(
             position=context.position,
             budgets=context.budgets,
             result=result,

@@ -61,6 +61,7 @@ PUBLIC_FACADE = {
     "RunLimits",
     "SafeWebReader",
     "Scope",
+    "SchemaDecodeError",
     "Settlement",
     "SystemResolver",
     "Telemetry",
@@ -104,10 +105,12 @@ PUBLIC_FACADE = {
     "bind_brave_web_search",
     "bind_web_read",
     "canonical_json_bytes",
+    "publish_host_table",
     "published_tool_ids",
     "raw_input_digest",
     "render_prompt",
     "sha256_hex",
+    "validate_tool_input",
     "web_family",
 }
 

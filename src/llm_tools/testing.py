@@ -86,7 +86,7 @@ class InMemoryBudgetState:
             if spend.settlement is None
         )
 
-    def reserve(self, position: InvocationPosition, reservation: Reservation) -> bool:
+    async def reserve(self, position: InvocationPosition, reservation: Reservation) -> bool:
         existing = self._spend.get(position)
         if existing is not None:
             if existing.reservation != reservation:
@@ -118,7 +118,7 @@ class InMemoryBudgetState:
         self._spend[position] = _Spend(reservation=reservation)
         return True
 
-    def settle(self, position: InvocationPosition, settlement: Settlement) -> None:
+    async def settle(self, position: InvocationPosition, settlement: Settlement) -> None:
         spend = self._spend.get(position)
         if spend is None:
             raise ValueError("position has no durable budget charge")
@@ -171,7 +171,7 @@ class InMemoryPositionRecorder:
     def record(self, position: InvocationPosition) -> PositionRecord:
         return self._records[position]
 
-    def occupy(
+    async def occupy(
         self,
         *,
         position: InvocationPosition,
@@ -213,7 +213,7 @@ class InMemoryPositionRecorder:
             actual_attempts=existing.abandoned_attempts,
         )
 
-    def reserve(
+    async def reserve(
         self,
         *,
         position: InvocationPosition,
@@ -226,12 +226,12 @@ class InMemoryPositionRecorder:
                 raise ValueError("position reservation differs from durable record")
             assert record.reservation_accepted is not None
             return record.reservation_accepted
-        accepted = budgets.reserve(position, reservation)
+        accepted = await budgets.reserve(position, reservation)
         record.reservation = reservation
         record.reservation_accepted = accepted
         return accepted
 
-    def dispatch_started(
+    async def dispatch_started(
         self,
         *,
         position: InvocationPosition,
@@ -266,7 +266,7 @@ class InMemoryPositionRecorder:
             actual_attempts=record.abandoned_attempts,
         )
 
-    def dispatch_abandoned(
+    async def dispatch_abandoned(
         self,
         *,
         position: InvocationPosition,
@@ -298,14 +298,14 @@ class InMemoryPositionRecorder:
         record.abandoned_attempts += actual_attempts
         record.in_flight = False
 
-    def uncertain(self, *, position: InvocationPosition) -> None:
+    async def uncertain(self, *, position: InvocationPosition) -> None:
         record = self._records[position]
         if record.terminal_result is not None:
             raise ValueError("terminal position cannot become uncertain")
         record.uncertain = True
         record.in_flight = False
 
-    def terminalize_and_settle(
+    async def terminalize_and_settle(
         self,
         *,
         position: InvocationPosition,
@@ -321,7 +321,7 @@ class InMemoryPositionRecorder:
         if record.uncertain:
             raise ValueError("uncertain position requires explicit reconciliation")
         if record.reservation_accepted:
-            budgets.settle(position, settlement)
+            await budgets.settle(position, settlement)
         record.terminal_result = result
         record.settlement = settlement
         record.in_flight = False

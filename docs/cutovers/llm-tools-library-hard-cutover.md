@@ -157,6 +157,15 @@ both discovery tools must also be granted, and
 `max_target_tools_published` must fit
 the granted set. Authority lives in the profile, not its exposure.
 
+`validate_tool_input(binding, arguments)` is the pure strict schema boundary. It
+returns the declaration's owned input type or raises the public
+`SchemaDecodeError`. Its signature contains no execution context, so validation
+cannot occupy a position, access or reserve a budget, touch a recorder, or
+dispatch a handler. `FrozenCapabilityProfile.is_tightening_of(maximum)` proves a
+grant subset with exact shared contract/policy revisions and no wider per-tool
+or run limit; `FrozenToolPlan.is_tightening_of(maximum_profile)` applies the same
+authority proof to a plan. Exposure remains a separate publication choice.
+
 `ToolExecutor.execute(binding, raw_input: RawToolInput, context)` accepts one
 bounded tagged raw input from the provider adapter:
 `ParsedJson(value: JsonValue) | MalformedJson(raw_utf8: bytes)`. The adapter
@@ -424,10 +433,23 @@ operator recovery, and it carries the known attempts already spent so the next
 dispatch receives only the remaining ceiling. It rejects `BilledOnce`,
 terminal, uncertain, unclaimed, unfenced, and over-attempt positions.
 
+`BudgetState.reserve/settle` and every mutating `PositionRecorder` operation are
+asynchronous. `ToolExecutor.execute` awaits those operations and the handler;
+there is no synchronous persistence fallback. The recorder still owns atomic,
+idempotent terminal-result plus budget settlement. A durable adapter uses a
+nonblocking persistence driver and preserves its own transaction boundary.
+
 A `HostTable` plan is never provider-published. Deterministic application code
 may call it directly; a separately owned Program Agent may consume it behind
 its sole `run` tool. This library implements neither a Program Agent nor
 Programmatic Tool Calling.
+
+`publish_host_table(plan)` accepts only a frozen `HostTable` plan and returns a
+typed immutable prompt section for `render_prompt`. It publishes the exact
+ordered grants, documentation, schemas, effects, replay policies, effective
+limits, and revisions. An empty profile produces a real empty table with no
+dummy tool. Publication never truncates silently; the consuming host enforces
+its cumulative context bound before provider I/O.
 
 Every granted `Write` binding, including HostTable calls, declares its durable
 effect requirements; `ToolExecutor.execute` requires the invocation to carry a
