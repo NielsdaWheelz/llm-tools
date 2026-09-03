@@ -154,6 +154,10 @@ class FrozenCapabilityProfile:
     run_limits: RunLimits
     profile_revision: str
 
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "grants", MappingProxyType(dict(self.grants)))
+        object.__setattr__(self, "ordered_grants", tuple(self.ordered_grants))
+
     def grant(self, tool_id: ToolId) -> EffectiveToolGrant:
         try:
             return self.grants[tool_id]
@@ -166,6 +170,12 @@ class FrozenCapabilityProfile:
         Profile identities and revisions may differ; shared grants require the
         same tool-contract and policy revisions.
         """
+
+        try:
+            self._require_integrity()
+            maximum._require_integrity()
+        except (AttributeError, KeyError, TypeError, ValueError):
+            return False
 
         if not (
             self.run_limits.max_calls <= maximum.run_limits.max_calls
@@ -188,6 +198,24 @@ class FrozenCapabilityProfile:
             ):
                 return False
         return True
+
+    def _require_integrity(self) -> None:
+        ordered_ids = tuple(grant.id for grant in self.ordered_grants)
+        if len(set(ordered_ids)) != len(ordered_ids):
+            raise ValueError("frozen profile has duplicate ordered grants")
+        if set(self.grants) != set(ordered_ids):
+            raise ValueError("frozen profile grant map differs from its ordered grants")
+        if any(self.grants[grant.id] != grant for grant in self.ordered_grants):
+            raise ValueError("frozen profile grant values differ from its ordered grants")
+        expected_revision = _revision(
+            {
+                "grants": [grant.json() for grant in self.ordered_grants],
+                "id": str(self.id),
+                "run_limits": self.run_limits.json(),
+            }
+        )
+        if self.profile_revision != expected_revision:
+            raise ValueError("frozen profile revision does not match its contents")
 
 
 @dataclass(frozen=True, slots=True)
@@ -221,6 +249,10 @@ class PlanCatalogView:
     _specs: Mapping[ToolId, ToolSpec[Any, Any, Any]]
     _bindings: Mapping[ToolId, ToolBinding[Any, Any, Any]]
 
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "_specs", MappingProxyType(dict(self._specs)))
+        object.__setattr__(self, "_bindings", MappingProxyType(dict(self._bindings)))
+
     @classmethod
     def from_catalog(cls, catalog: ToolCatalog, ids: tuple[ToolId, ...]) -> PlanCatalogView:
         return cls(
@@ -253,49 +285,17 @@ class ToolPlan:
     ) -> FrozenToolPlan:
         if self.profile != profile.id:
             raise ValueError("plan references a different frozen profile")
-        if not isinstance(self.exposure, (Native, Discoverable, HostTable)):
-            raise TypeError("plan exposure must be exactly one supported variant")
+        profile._require_integrity()
+        view_ids, exposure_json = _exposure_projection(profile, self.exposure)
 
-        grant_ids = tuple(profile.grants)
-        if isinstance(self.exposure, Discoverable):
-            targets = self.exposure.targets
-            discovery_ids = {ToolId("tool.search"), ToolId("tool.read")}
-            if len(set(targets)) != len(targets):
-                raise ValueError("discoverable targets must be unique")
-            if discovery_ids.intersection(targets):
-                raise ValueError("discovery tools must remain separate from discoverable targets")
-            missing_discovery = discovery_ids - set(grant_ids)
-            if missing_discovery:
-                raise ValueError("Discoverable plans must grant both discovery tools")
-            if not set(targets).issubset(profile.grants):
-                raise ValueError("discoverable targets must be a subset of profile grants")
-            if not 0 <= self.exposure.max_target_tools_published <= len(targets):
-                raise ValueError("discoverable publication ceiling must fit the target set")
-            view_ids = tuple(dict.fromkeys((ToolId("tool.search"), ToolId("tool.read"), *targets)))
-            exposure_json: JsonObject = {
-                "max_target_tools_published": self.exposure.max_target_tools_published,
-                "targets": [str(tool_id) for tool_id in targets],
-                "type": "Discoverable",
-            }
-        elif isinstance(self.exposure, Native):
-            view_ids = grant_ids
-            exposure_json = {"type": "Native"}
-        else:
-            view_ids = grant_ids
-            exposure_json = {"type": "HostTable"}
-
-        revision = _revision(
-            {
-                "exposure": exposure_json,
-                "profile_revision": profile.profile_revision,
-            }
-        )
-        return FrozenToolPlan(
+        plan = FrozenToolPlan(
             profile=profile,
             exposure=self.exposure,
             catalog_view=PlanCatalogView.from_catalog(catalog, view_ids),
-            plan_revision=revision,
+            plan_revision=_plan_revision(profile.profile_revision, exposure_json),
         )
+        plan._require_integrity()
+        return plan
 
 
 @dataclass(frozen=True, slots=True)
@@ -309,9 +309,88 @@ class FrozenToolPlan:
         return self.profile.grant(tool_id)
 
     def is_tightening_of(self, maximum_profile: FrozenCapabilityProfile) -> bool:
-        """Prove authority tightening; exposure is a separate publication choice."""
+        """Prove a consistent plan's authority is no wider than ``maximum_profile``."""
+
+        try:
+            self._require_integrity()
+        except (AttributeError, KeyError, TypeError, ValueError):
+            return False
 
         return self.profile.is_tightening_of(maximum_profile)
+
+    def _require_integrity(self) -> None:
+        self.profile._require_integrity()
+        view_ids, exposure_json = _exposure_projection(self.profile, self.exposure)
+        expected_ids = set(view_ids)
+        if set(self.catalog_view._specs) != expected_ids:
+            raise ValueError("frozen plan catalogue specifications differ from its exposure")
+        if set(self.catalog_view._bindings) != expected_ids:
+            raise ValueError("frozen plan catalogue bindings differ from its exposure")
+
+        for tool_id in view_ids:
+            grant = self.profile.grant(tool_id)
+            spec = self.catalog_view.spec(tool_id)
+            binding = self.catalog_view.binding(tool_id)
+            if spec.id != tool_id or binding.spec.id != tool_id:
+                raise ValueError("frozen plan catalogue entry has a mismatched tool id")
+            if spec.tool_contract_revision != grant.tool_contract_revision:
+                raise ValueError("frozen plan specification differs from its authorized contract")
+            if binding.spec.tool_contract_revision != grant.tool_contract_revision:
+                raise ValueError("frozen plan binding differs from its authorized contract")
+            if binding.spec.documentation_revision != spec.documentation_revision:
+                raise ValueError("frozen plan binding uses a stale specification")
+            if binding.policy_revision != grant.policy_revision:
+                raise ValueError("frozen plan binding differs from its authorized policy")
+            if not grant.limits.is_tightening_of(spec.limits):
+                raise ValueError("frozen plan grant widens its declaration limits")
+
+        expected_revision = _plan_revision(self.profile.profile_revision, exposure_json)
+        if self.plan_revision != expected_revision:
+            raise ValueError("frozen plan revision does not match its contents")
+
+
+def _exposure_projection(
+    profile: FrozenCapabilityProfile,
+    exposure: Exposure,
+) -> tuple[tuple[ToolId, ...], JsonObject]:
+    if not isinstance(exposure, (Native, Discoverable, HostTable)):
+        raise TypeError("plan exposure must be exactly one supported variant")
+
+    grant_ids = tuple(grant.id for grant in profile.ordered_grants)
+    if isinstance(exposure, Discoverable):
+        targets = exposure.targets
+        discovery_ids = {ToolId("tool.search"), ToolId("tool.read")}
+        if len(set(targets)) != len(targets):
+            raise ValueError("discoverable targets must be unique")
+        if discovery_ids.intersection(targets):
+            raise ValueError("discovery tools must remain separate from discoverable targets")
+        missing_discovery = discovery_ids - set(grant_ids)
+        if missing_discovery:
+            raise ValueError("Discoverable plans must grant both discovery tools")
+        if not set(targets).issubset(profile.grants):
+            raise ValueError("discoverable targets must be a subset of profile grants")
+        if not 0 <= exposure.max_target_tools_published <= len(targets):
+            raise ValueError("discoverable publication ceiling must fit the target set")
+        return (
+            tuple(dict.fromkeys((ToolId("tool.search"), ToolId("tool.read"), *targets))),
+            {
+                "max_target_tools_published": exposure.max_target_tools_published,
+                "targets": [str(tool_id) for tool_id in targets],
+                "type": "Discoverable",
+            },
+        )
+    if isinstance(exposure, Native):
+        return grant_ids, {"type": "Native"}
+    return grant_ids, {"type": "HostTable"}
+
+
+def _plan_revision(profile_revision: str, exposure_json: JsonObject) -> str:
+    return _revision(
+        {
+            "exposure": exposure_json,
+            "profile_revision": profile_revision,
+        }
+    )
 
 
 def _revision(value: JsonValue) -> str:

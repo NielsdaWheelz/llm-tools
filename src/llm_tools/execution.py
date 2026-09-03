@@ -422,6 +422,10 @@ def _verify_context(
     binding: ToolBinding[object, object, object],
     context: ExecutionContext,
 ) -> None:
+    try:
+        context.plan._require_integrity()
+    except (AttributeError, KeyError, TypeError, ValueError) as exc:
+        raise ExecutorConfigurationDefect("execution requires a consistent frozen plan") from exc
     if context.catalog_view is not context.plan.catalog_view:
         raise ExecutorConfigurationDefect("context must use the plan-owned catalogue view")
     if context.budgets.limits != context.plan.profile.run_limits:

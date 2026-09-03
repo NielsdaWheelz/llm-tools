@@ -12,6 +12,10 @@ def publish_host_table(plan: FrozenToolPlan) -> PromptSection:
 
     if not isinstance(plan.exposure, HostTable):
         raise ValueError("host-table publication requires HostTable exposure")
+    try:
+        plan._require_integrity()
+    except (AttributeError, KeyError, TypeError, ValueError) as exc:
+        raise ValueError("host-table publication requires a consistent frozen plan") from exc
 
     tools: list[JsonObject] = []
     for grant in plan.profile.ordered_grants:

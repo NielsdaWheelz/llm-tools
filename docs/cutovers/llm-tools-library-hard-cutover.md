@@ -163,8 +163,16 @@ returns the declaration's owned input type or raises the public
 cannot occupy a position, access or reserve a budget, touch a recorder, or
 dispatch a handler. `FrozenCapabilityProfile.is_tightening_of(maximum)` proves a
 grant subset with exact shared contract/policy revisions and no wider per-tool
-or run limit; `FrozenToolPlan.is_tightening_of(maximum_profile)` applies the same
-authority proof to a plan. Exposure remains a separate publication choice.
+or run limit. `ToolPlan.freeze(catalog, profile)` proves before returning that
+the exact exposure-filtered catalogue view contains neither missing nor extra
+entries and that every exposed specification and binding matches the contract
+and policy revision authorized by its grant. It also verifies tightened limits
+and recomputes the profile and plan revisions from their contents.
+`FrozenToolPlan.is_tightening_of(maximum_profile)` repeats that plan-integrity
+proof before applying the authority comparison, returning false for an
+inconsistent directly constructed plan. Equivalent separately composed
+catalogues remain valid when their deterministic revisions match. Exposure
+remains a separate publication choice.
 
 `ToolExecutor.execute(binding, raw_input: RawToolInput, context)` accepts one
 bounded tagged raw input from the provider adapter:
@@ -313,7 +321,13 @@ state, not authority. A profile's `profile_revision` hashes its run limits,
 ordered grants, effective limits, and granted tool and binding-policy revisions.
 A plan's `plan_revision` hashes its profile revision and the full tagged
 exposure payload, including discoverable targets and publication ceiling.
-Presentation-only edits never invalidate authority or durable replay.
+Plan construction and every public proof or HostTable publication recompute
+these revisions and cross-check the filtered specifications and bindings against
+their grants; a different catalogue cannot substitute an effect, schema,
+declared limit, replay policy, or policy input under an authorized revision.
+Presentation-only edits never invalidate authority or durable replay, while the
+plan still requires its view specification and bound specification to share the
+same documentation revision.
 
 ## 6. General tools
 
@@ -464,9 +478,11 @@ Programmatic Tool Calling.
 `publish_host_table(plan)` accepts only a frozen `HostTable` plan and returns a
 typed immutable prompt section for `render_prompt`. It publishes the exact
 ordered grants, documentation, schemas, effects, replay policies, effective
-limits, and revisions. An empty profile produces a real empty table with no
-dummy tool. Publication never truncates silently; the consuming host enforces
-its cumulative context bound before provider I/O.
+limits, and revisions. Before rendering, it repeats the complete plan-integrity
+check, so a directly constructed plan, substituted catalogue view, or forged
+profile/plan revision fails closed. An empty profile produces a real empty table
+with no dummy tool. Publication never truncates silently; the consuming host
+enforces its cumulative context bound before provider I/O.
 
 Every granted `Write` binding, including HostTable calls, declares its durable
 effect requirements; `ToolExecutor.execute` requires the invocation to carry a
@@ -553,7 +569,7 @@ critical/replacement proof, then refactor without changing the proof.
 
 | Boundary | Primary proof and independent oracle |
 |---|---|
-| declaration/schema/catalog/profile | `tests/kernel/test_tool_contract.py`: hand-authored semantic/presentation schemas and profile table; description-only and enum-order-only edits preserve contract revision, description edits bump documentation revision, semantic enum edits bump contract revision; composes separate `web`/`tool` families and rejects mixed prefixes, duplicates, malformed/unbound grants, stale binding policy, over-budget, and mixed exposure |
+| declaration/schema/catalog/profile | `tests/kernel/test_tool_contract.py`: hand-authored semantic/presentation schemas and profile table; description-only and enum-order-only edits preserve contract revision, description edits bump documentation revision, semantic enum edits bump contract revision; composes separate `web`/`tool` families and rejects mixed prefixes, duplicates, malformed/unbound grants, stale binding policy, over-budget, and mixed exposure. `tests/kernel/test_frozen_plan_integrity.py`: cross-catalog Read-to-Write, schema, limit, replay, and policy substitution; direct inconsistent plan, missing/extra view, and forged revision rejection; equivalent-catalogue, narrowed Discoverable, Native, HostTable, and empty-plan validity. |
 | execution/result/prompt | `tests/kernel/test_execution_and_prompt.py`: hand-authored recorder trace proves parsed/malformed raw-envelope digest before decode, occupied mismatch, completed replay, malformed/nonobject/schema-invalid terminalization, budget/unavailable terminalization, unavailable-without-uncertain, dispatch transition by replay policy, uncertain `BilledOnce`, terminal `Pure`/`Read` `ReDispatchable` timeout, recovery-gated `Write` `ReDispatchable` timeout and redispatch, effect-id rejection, atomic/idempotent result-plus-settlement and crash/replay, exact attempt/output accounting, reviewed envelopes/escaping, and arbitrary guest JSON preservation |
 | discovery | `tests/kernel/test_discovery.py`: fixed granted/target/nontarget/ungranted catalogue; search reveals only targets, unknown/ungranted/nontarget reads are identical, the target-only publication cap and plan revision are exact, and only successfully read targets publish on the next reference-host turn |
 | Web search | `tests/conformance/test_web_search.py`: fixed Brave transcripts; normalized identity, attempts, limits, and errors |
@@ -598,7 +614,10 @@ After all consumers are green, run a one-time residue audit for
    binding-policy/documentation revisions. Explicitly unavailable bindings
    preserve catalogue shape and fail before dispatch without blocking boot.
 4. Profiles are closed authority; Native, Discoverable, and HostTable plans
-   select one mutually exclusive exposure and defect without fallback.
+   select one mutually exclusive exposure and defect without fallback. Freeze,
+   tightening proof, execution, and HostTable publication reject any catalogue
+   view, contract/policy grant, effective limit, or profile/plan revision
+   inconsistency before provider or handler I/O.
 5. `tool.search/read` reveal only the frozen intersection of grants and
    Discoverable targets; unknown, ungranted, and nontarget ids are
    indistinguishable, and the reference host proves target-capped
