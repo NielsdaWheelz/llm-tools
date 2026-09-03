@@ -99,11 +99,15 @@ binding's declared input type or raises `SchemaDecodeError`; it has no execution
 occupy a position, inspect or reserve a budget, touch a recorder, or dispatch a handler.
 
 `FrozenCapabilityProfile.is_tightening_of(maximum)` proves that every candidate grant is present in
-the maximum with the same tool-contract and policy revisions and no wider tool or run limit.
+the maximum with the same tool-contract, implementation, and policy revisions and no wider tool or
+run limit.
 `ToolPlan.freeze(catalog, profile)` additionally proves that every specification and binding in the
-exposure-filtered catalogue view has exactly the contract and policy revision authorized by its
-grant, that effective limits remain narrowed, and that the profile and plan revisions commit to
-their contents. It rejects a substituted catalogue before returning a plan.
+exposure-filtered catalogue view has exactly the contract, implementation, and policy revision
+authorized by its grant, that effective limits remain narrowed, and that the profile and plan
+revisions commit to their contents. Every `ToolBinding` must declare a nonempty owner-controlled
+`implementation_revision` covering its handler and transitive execution behavior. Behavior-affecting
+configuration belongs in `policy_inputs`; an implementation change not represented there requires
+a revision bump. It rejects a substituted catalogue before returning a plan.
 `FrozenToolPlan.is_tightening_of(maximum_profile)` first revalidates that complete plan integrity,
 then applies the authority proof; inconsistent directly constructed plans return `False`. Profile
 identity, profile revision, plan revision, and exposure may differ between a valid candidate and
@@ -115,10 +119,10 @@ serial prompt-published tools must also require `HostTable` exposure and `max_in
 `PromptSection`. `render_prompt(...)` performs the sole XML-like escaping step. The publication
 contains the exact ordered grants, documentation, schemas, effects, replay policies, effective
 limits, and revisions. It revalidates the frozen plan and therefore cannot publish a mismatched
-contract, policy, filtered view, profile revision, or plan revision. An empty profile publishes an
-actual empty `tools` array; no placeholder capability is required. Publication is exact rather than
-silently truncated, so the consuming host must reject a table that exceeds its cumulative model-
-context limit.
+contract, implementation, policy, filtered view, profile revision, or plan revision. An empty
+profile publishes an actual empty `tools` array; no placeholder capability is required. Publication
+is exact rather than silently truncated, so the consuming host must reject a table that exceeds its
+cumulative model-context limit.
 
 The durable execution boundary is asynchronous end to end. `BudgetState.reserve/settle` and every
 mutating `PositionRecorder` operation are `async`; `ToolExecutor.execute` awaits them and the bound

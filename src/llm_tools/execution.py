@@ -442,6 +442,7 @@ def _verify_context(
         planned_binding.policy_revision != binding.policy_revision
         or planned_spec.tool_contract_revision != binding.spec.tool_contract_revision
         or context.grant != planned_grant
+        or context.grant.implementation_revision != binding.implementation_revision
         or context.grant.tool_contract_revision != binding.spec.tool_contract_revision
         or context.grant.policy_revision != binding.policy_revision
     ):

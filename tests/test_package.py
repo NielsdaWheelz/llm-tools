@@ -176,6 +176,7 @@ async def test_public_facade_is_sufficient_to_author_and_execute_a_binding() -> 
         spec=spec,
         execute=llm_tools.Available(handler),
         replay_policy=llm_tools.ReplayPolicy.ReDispatchable,
+        implementation_revision="test-package-v1",
         policy_epoch=llm_tools.PolicyEpoch("v1"),
         policy_inputs={},
     )

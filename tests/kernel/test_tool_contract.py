@@ -113,6 +113,7 @@ def _binding(
         spec=spec,
         execute=Available(_unused_handler),
         replay_policy=ReplayPolicy.BilledOnce,
+        implementation_revision="test-search-v1",
         policy_epoch=PolicyEpoch(epoch),
         policy_inputs={"provider": "brave", "safe_search": "moderate"},
     )
@@ -186,6 +187,7 @@ def test_revisions_distinguish_semantics_documentation_and_binding_policy() -> N
         spec=baseline,
         execute=Unavailable("credential absent"),
         replay_policy=ReplayPolicy.BilledOnce,
+        implementation_revision="test-search-v1",
         policy_epoch=PolicyEpoch("search-v1"),
         policy_inputs={"provider": "brave", "safe_search": "moderate"},
     )
@@ -194,10 +196,23 @@ def test_revisions_distinguish_semantics_documentation_and_binding_policy() -> N
         spec=baseline,
         execute=Unavailable("different private deployment detail"),
         replay_policy=ReplayPolicy.BilledOnce,
+        implementation_revision="test-search-v1",
         policy_epoch=PolicyEpoch("search-v1"),
         policy_inputs={"provider": "brave", "safe_search": "moderate"},
     )
     assert differently_worded.policy_revision == unavailable.policy_revision
+
+
+def test_binding_requires_an_explicit_nonempty_implementation_revision() -> None:
+    with pytest.raises(ValueError, match="implementation revision"):
+        ToolBinding(
+            spec=_spec(),
+            execute=Available(_unused_handler),
+            replay_policy=ReplayPolicy.BilledOnce,
+            implementation_revision=" ",
+            policy_epoch=PolicyEpoch("search-v1"),
+            policy_inputs={},
+        )
 
 
 def test_no_declared_error_publishes_only_boundary_failures() -> None:
@@ -224,6 +239,7 @@ def test_frozen_revision_inputs_cannot_drift_through_exposed_nested_data() -> No
         spec=spec,
         execute=Available(_unused_handler),
         replay_policy=ReplayPolicy.BilledOnce,
+        implementation_revision="test-search-v1",
         policy_epoch=PolicyEpoch("search-v1"),
         policy_inputs={"nested": {"modes": ["web", "news"]}},
     )

@@ -85,12 +85,20 @@ class ToolGrant:
 class EffectiveToolGrant:
     id: ToolId
     limits: ToolLimits
+    implementation_revision: str
     tool_contract_revision: str
     policy_revision: str
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.implementation_revision, str):
+            raise TypeError("implementation revision must be a string")
+        if not self.implementation_revision.strip():
+            raise ValueError("implementation revision must not be empty")
 
     def json(self) -> JsonObject:
         return {
             "id": str(self.id),
+            "implementation_revision": self.implementation_revision,
             "limits": self.limits.json(),
             "policy_revision": self.policy_revision,
             "tool_contract_revision": self.tool_contract_revision,
@@ -125,6 +133,7 @@ class CapabilityProfile:
             resolved = EffectiveToolGrant(
                 id=grant.id,
                 limits=limits,
+                implementation_revision=binding.implementation_revision,
                 tool_contract_revision=spec.tool_contract_revision,
                 policy_revision=binding.policy_revision,
             )
@@ -168,7 +177,7 @@ class FrozenCapabilityProfile:
         """Return whether this frozen authority is no wider than ``maximum``.
 
         Profile identities and revisions may differ; shared grants require the
-        same tool-contract and policy revisions.
+        same tool-contract, implementation, and policy revisions.
         """
 
         try:
@@ -192,7 +201,8 @@ class FrozenCapabilityProfile:
             except KeyError:
                 return False
             if (
-                grant.tool_contract_revision != maximum_grant.tool_contract_revision
+                grant.implementation_revision != maximum_grant.implementation_revision
+                or grant.tool_contract_revision != maximum_grant.tool_contract_revision
                 or grant.policy_revision != maximum_grant.policy_revision
                 or not grant.limits.is_tightening_of(maximum_grant.limits)
             ):
@@ -339,6 +349,8 @@ class FrozenToolPlan:
                 raise ValueError("frozen plan binding differs from its authorized contract")
             if binding.spec.documentation_revision != spec.documentation_revision:
                 raise ValueError("frozen plan binding uses a stale specification")
+            if binding.implementation_revision != grant.implementation_revision:
+                raise ValueError("frozen plan binding differs from its authorized implementation")
             if binding.policy_revision != grant.policy_revision:
                 raise ValueError("frozen plan binding differs from its authorized policy")
             if not grant.limits.is_tightening_of(spec.limits):

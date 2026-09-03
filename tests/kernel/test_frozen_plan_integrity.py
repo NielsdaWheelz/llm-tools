@@ -15,6 +15,7 @@ from llm_tools import (
     Available,
     CapabilityProfile,
     Discoverable,
+    EffectiveToolGrant,
     FrozenToolPlan,
     HostTable,
     Native,
@@ -76,6 +77,10 @@ async def _unused_handler(value: object, context: object) -> object:
     raise AssertionError(f"integrity validation must not dispatch: {value!r}, {context!r}")
 
 
+async def _replacement_handler(value: object, context: object) -> object:
+    raise AssertionError(f"replacement must not dispatch: {value!r}, {context!r}")
+
+
 def _binding(
     tool_id: str = "test.inspect",
     *,
@@ -83,6 +88,7 @@ def _binding(
     input_type: type[BaseModel] = Input,
     limits: ToolLimits = TOOL_LIMITS,
     replay_policy: ReplayPolicy = ReplayPolicy.ReDispatchable,
+    implementation_revision: str = "test-inspect-v1",
     policy_epoch: str = "v1",
     policy_inputs: dict[str, object] | None = None,
 ) -> ToolBinding[Any, Success, NoDeclaredError]:
@@ -100,6 +106,7 @@ def _binding(
         spec=spec,
         execute=Available(_unused_handler),
         replay_policy=replay_policy,
+        implementation_revision=implementation_revision,
         policy_epoch=PolicyEpoch(policy_epoch),
         policy_inputs=policy_inputs or {},
     )
@@ -135,6 +142,13 @@ def _profile(catalog: ToolCatalog, binding: ToolBinding[Any, Any, Any]):
             "contract",
         ),
         (_binding(replay_policy=ReplayPolicy.BilledOnce), "policy"),
+        (
+            replace(
+                _binding(implementation_revision="test-inspect-v2"),
+                execute=Available(_replacement_handler),
+            ),
+            "implementation",
+        ),
         (_binding(policy_epoch="v2"), "policy"),
         (_binding(policy_inputs={"audience": "external"}), "policy"),
     ],
@@ -143,11 +157,12 @@ def _profile(catalog: ToolCatalog, binding: ToolBinding[Any, Any, Any]):
         "schema",
         "declaration-limits",
         "replay-policy",
+        "implementation-revision",
         "policy-epoch",
         "policy-inputs",
     ),
 )
-def test_freeze_rejects_cross_catalog_contract_and_policy_substitution(
+def test_freeze_rejects_cross_catalog_contract_implementation_and_policy_substitution(
     replacement: ToolBinding[Any, Success, NoDeclaredError],
     mismatch: str,
 ) -> None:
@@ -166,7 +181,10 @@ def test_direct_inconsistent_plan_fails_tightening_and_host_publication() -> Non
     profile = _profile(authorized_catalog, authorized)
     valid = ToolPlan(profile.id, HostTable()).freeze(authorized_catalog, profile)
 
-    replacement = _binding(effect=ToolEffect.Write)
+    replacement = replace(
+        _binding(implementation_revision="test-inspect-v2"),
+        execute=Available(_replacement_handler),
+    )
     substituted_catalog = _catalog(replacement)
     forged = FrozenToolPlan(
         profile=profile,
@@ -178,6 +196,41 @@ def test_direct_inconsistent_plan_fails_tightening_and_host_publication() -> Non
     assert not forged.is_tightening_of(profile)
     with pytest.raises(ValueError, match="consistent frozen plan"):
         publish_host_table(forged)
+
+
+@pytest.mark.parametrize(
+    ("implementation_revision", "error"),
+    [(7, TypeError), (" ", ValueError)],
+)
+def test_direct_effective_grant_requires_a_valid_implementation_revision(
+    implementation_revision: Any,
+    error: type[Exception],
+) -> None:
+    with pytest.raises(error, match="implementation revision"):
+        EffectiveToolGrant(
+            id=ToolId("test.inspect"),
+            limits=TOOL_LIMITS,
+            implementation_revision=implementation_revision,
+            tool_contract_revision="contract-v1",
+            policy_revision="policy-v1",
+        )
+
+
+def test_implementation_revision_rotates_profile_and_plan_revisions() -> None:
+    first = _binding(implementation_revision="test-inspect-v1")
+    second = _binding(implementation_revision="test-inspect-v2")
+    assert first.spec.tool_contract_revision == second.spec.tool_contract_revision
+    assert first.policy_revision == second.policy_revision
+
+    first_catalog = _catalog(first)
+    second_catalog = _catalog(second)
+    first_profile = _profile(first_catalog, first)
+    second_profile = _profile(second_catalog, second)
+    first_plan = ToolPlan(first_profile.id, HostTable()).freeze(first_catalog, first_profile)
+    second_plan = ToolPlan(second_profile.id, HostTable()).freeze(second_catalog, second_profile)
+
+    assert first_profile.profile_revision != second_profile.profile_revision
+    assert first_plan.plan_revision != second_plan.plan_revision
 
 
 @pytest.mark.parametrize(

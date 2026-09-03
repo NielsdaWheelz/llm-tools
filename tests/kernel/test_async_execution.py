@@ -170,6 +170,7 @@ async def test_executor_awaits_recorder_budget_and_handler_boundaries() -> None:
         spec=spec,
         execute=Available(handler),
         replay_policy=ReplayPolicy.ReDispatchable,
+        implementation_revision="test-async-v1",
         policy_epoch=PolicyEpoch("v1"),
         policy_inputs={},
     )

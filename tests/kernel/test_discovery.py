@@ -124,6 +124,7 @@ def _target(
         spec=spec,
         execute=Available(_unused_target_handler),
         replay_policy=ReplayPolicy.ReDispatchable,
+        implementation_revision="test-target-v1",
         policy_epoch=PolicyEpoch("target-v1"),
         policy_inputs={},
     )

@@ -173,6 +173,7 @@ def _binding(
         spec=_spec(effect=effect),
         execute=Available(handler),
         replay_policy=replay_policy,
+        implementation_revision="test-execution-v1",
         policy_epoch=PolicyEpoch("test-v1"),
         policy_inputs={},
     )
@@ -296,6 +297,7 @@ async def test_budget_and_unavailable_fail_before_dispatch_without_uncertainty()
         spec=_spec(),
         execute=Unavailable("credential absent"),
         replay_policy=ReplayPolicy.BilledOnce,
+        implementation_revision="test-execution-v1",
         policy_epoch=PolicyEpoch("test-v1"),
         policy_inputs={},
     )
@@ -569,6 +571,7 @@ async def test_recovered_attempts_remain_charged_when_redispatch_stops_before_di
             spec=binding.spec,
             execute=Unavailable("credential removed"),
             replay_policy=binding.replay_policy,
+            implementation_revision=binding.implementation_revision,
             policy_epoch=binding.policy_epoch,
             policy_inputs=binding.policy_inputs,
         )
@@ -850,6 +853,7 @@ async def test_execution_requires_the_plan_owned_view_and_exact_frozen_binding()
         spec=binding.spec,
         execute=Available(rogue),
         replay_policy=binding.replay_policy,
+        implementation_revision=binding.implementation_revision,
         policy_epoch=binding.policy_epoch,
         policy_inputs=binding.policy_inputs,
     )
@@ -877,6 +881,37 @@ async def test_execution_requires_the_plan_owned_view_and_exact_frozen_binding()
             replace(context, budgets=InMemoryBudgetState(mismatched_limits)),
         )
     assert calls == 0
+
+
+@pytest.mark.asyncio
+async def test_execution_rejects_a_direct_inconsistent_plan_before_recorder_access() -> None:
+    async def authorized(value: Input, context: ExecutionContext) -> HandlerSuccess[Success]:
+        raise AssertionError(f"inconsistent plan must not dispatch: {value!r}, {context!r}")
+
+    async def replacement(value: Input, context: ExecutionContext) -> HandlerSuccess[Success]:
+        raise AssertionError(f"replacement must not dispatch: {value!r}, {context!r}")
+
+    binding = _binding(authorized)
+    substituted = ToolBinding(
+        spec=binding.spec,
+        execute=Available(replacement),
+        replay_policy=binding.replay_policy,
+        implementation_revision="test-execution-v2",
+        policy_epoch=binding.policy_epoch,
+        policy_inputs=binding.policy_inputs,
+    )
+    recorder = InMemoryPositionRecorder()
+    context = _context(binding, recorder=recorder, position="turn-5/inconsistent-plan")
+    inconsistent = replace(context.plan, catalog_view=_plan(substituted).catalog_view)
+
+    with pytest.raises(ExecutorConfigurationDefect, match="consistent frozen plan"):
+        await ToolExecutor.execute(
+            substituted,
+            ParsedJson({"query": "hello"}),
+            replace(context, plan=inconsistent, catalog_view=inconsistent.catalog_view),
+        )
+    with pytest.raises(KeyError):
+        recorder.record(context.position)
 
 
 @pytest.mark.asyncio
@@ -946,6 +981,7 @@ async def test_per_call_input_and_elapsed_limits_fail_before_dispatch() -> None:
         spec=spec,
         execute=Available(handler),
         replay_policy=ReplayPolicy.ReDispatchable,
+        implementation_revision="test-execution-v1",
         policy_epoch=PolicyEpoch("test-v1"),
         policy_inputs={},
     )
