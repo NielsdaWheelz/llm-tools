@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import html
 import ipaddress
 import json
 import math
@@ -351,7 +350,7 @@ class SafeWebReader:
                     max_bytes=self._limits.max_wire_bytes - wire_bytes,
                 )
                 wire_bytes += consumed
-                decoded = _decode_entity(
+                decoded = _decode_content_encoding(
                     body, encoding, self._limits.max_decoded_bytes - decoded_bytes
                 )
                 decoded_bytes += len(decoded)
@@ -569,7 +568,7 @@ async def _read_chunked(reader: asyncio.StreamReader, *, max_bytes: int) -> tupl
             raise WebReadFailure(InvalidUpstreamResponse(), attempts=1)
 
 
-def _decode_entity(body: bytes, encoding: str, remaining: int) -> bytes:
+def _decode_content_encoding(body: bytes, encoding: str, remaining: int) -> bytes:
     try:
         if encoding == "identity":
             if len(body) > remaining:
@@ -638,14 +637,14 @@ def _extract(content: bytes, media_type: str, charset: str | None) -> tuple[str,
         return text, None, "json-canonical-v1"
     decoded = _decode_text(content, charset)
     if media_type == "text/plain":
-        return _collapse_text(decoded), None, "plain-text-v1"
+        return _collapse_text(decoded), None, "plain-text-v2"
     parser = _VisibleTextParser()
     try:
         parser.feed(decoded)
         parser.close()
     except Exception:
         raise WebReadFailure(InvalidUpstreamResponse(), attempts=1) from None
-    return _collapse_text(" ".join(parser.text)), parser.title, "html-visible-text-v1"
+    return _collapse_text(" ".join(parser.text)), parser.title, "html-visible-text-v2"
 
 
 class _VisibleTextParser(HTMLParser):
@@ -685,7 +684,7 @@ class _VisibleTextParser(HTMLParser):
 
 
 def _collapse_text(value: str) -> str:
-    return " ".join(html.unescape(value).split())
+    return " ".join(value.split())
 
 
 def _truncate_utf8(value: str, max_bytes: int) -> tuple[str, bool]:

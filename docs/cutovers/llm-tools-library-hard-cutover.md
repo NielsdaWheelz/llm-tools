@@ -420,7 +420,7 @@ logical dispatch; no hop receives a fresh retry allowance. Wire, decoded-byte,
 and elapsed-time ceilings are aggregate across the entire dispatch, not reset
 per request or redirect.
 
-V1 is direct mode and must pin/verify the actual peer. Proxy support is out of
+Direct mode must pin/verify the actual peer. Proxy support is out of
 scope; ambient proxy variables, cookies, authorization headers, and shared
 browser state are disabled.
 
@@ -430,8 +430,13 @@ the policy, not the transport, decides admission. Tests may substitute only
 this OS/network boundary, which lets the same production policy prove rebinding
 and peer mismatch without weakening the real call path.
 
-V1 accepts HTML/XHTML, plain text, and JSON. Extraction emits bounded text and
-metadata, never active markup. Every success includes:
+The v2 reader implementation accepts HTML/XHTML, plain text, and JSON. Extraction emits bounded
+text and metadata, never active markup. `plain-text-v2` performs strict charset decoding and
+whitespace collapse only, so entity-looking text and markup remain literal. `html-visible-text-v2`
+uses the standard parser's `convert_charrefs=True` pass exactly once, excludes non-visible element
+contents, and then collapses whitespace without interpreting the parser output again. Thus encoded
+markup produced by that one decode remains inert text. Unchanged `json-canonical-v1` parses and
+canonicalizes JSON. Every success includes:
 
 ```text
 EvidenceReceipt(
@@ -444,6 +449,22 @@ Retrieved content is untrusted data. `web.read` prevents network-boundary abuse;
 it cannot decide whether a host may disclose private information to an external
 destination. Any application granting external reads beside private data owns
 that information-flow policy explicitly.
+
+### Web-reader compatibility record
+
+| Identity | Current value | Migration meaning |
+|---|---|---|
+| Binding implementation | `llm-tools-web-read-v2` | Replaces v1's accidental second entity decode; exact-revision consumers must update and re-freeze. |
+| Binding policy epoch | `web-read-v1` | Unchanged: direct mode, accepted media, and owner-controlled policy inputs did not change. |
+| Plain-text extraction locator | `plain-text-v2` | Charset decode plus whitespace collapse; no HTML or entity interpretation. |
+| HTML/XHTML extraction locator | `html-visible-text-v2` | One parser-owned standards decode, visible-text sanitization, then whitespace collapse. |
+| JSON extraction locator | `json-canonical-v1` | Unchanged canonical JSON behavior. |
+
+The portable `WEB_READ_SPEC` contract and limits remain unchanged. Because frozen grants commit to
+the binding implementation revision, a kernel or host pinned to v1 must pin the new library commit,
+change its expected revision to `llm-tools-web-read-v2`, reconstruct the catalogue, freeze a new
+capability profile and plan, and deploy those new identities together. Reusing a v1 frozen profile
+or plan with the v2 binding must continue to fail closed as a revision mismatch.
 
 ## 8. Budgets, replay hooks, and prompts
 
@@ -597,7 +618,7 @@ critical/replacement proof, then refactor without changing the proof.
 | execution/result/prompt | `tests/kernel/test_execution_and_prompt.py`: hand-authored recorder trace proves parsed/malformed raw-envelope digest before decode, occupied mismatch, completed replay, malformed/nonobject/schema-invalid terminalization, budget/unavailable terminalization, unavailable-without-uncertain, dispatch transition by replay policy, uncertain `BilledOnce`, terminal `Pure`/`Read` `ReDispatchable` timeout, recovery-gated `Write` `ReDispatchable` timeout and redispatch, effect-id rejection, direct inconsistent-plan rejection before recorder access, atomic/idempotent result-plus-settlement and crash/replay, exact attempt/output accounting, reviewed envelopes/escaping, and arbitrary guest JSON preservation |
 | discovery | `tests/kernel/test_discovery.py`: fixed granted/target/nontarget/ungranted catalogue; search reveals only targets, unknown/ungranted/nontarget reads are identical, the target-only publication cap and plan revision are exact, and only successfully read targets publish on the next reference-host turn |
 | Web search | `tests/conformance/test_web_search.py`: fixed Brave transcripts; normalized identity, attempts, limits, and errors |
-| Web read | `tests/conformance/test_web_read.py`: test-owned loopback servers and resolver/peer fixtures for cross-authority redirect Host/SNI, rebinding, private address, peer mismatch, MIME, size, compression, timeout, evidence, and ambient-proxy rejection |
+| Web read | `tests/conformance/test_web_read.py`: test-owned loopback servers and resolver/peer fixtures for cross-authority redirect Host/SNI, rebinding, private address, peer mismatch, MIME, size, compression, timeout, evidence, ambient-proxy rejection, literal plain-text markup/entities, and exactly-once HTML named/numeric/nested entity decoding |
 | provider lowering | `llm-calling/tests/test_tool_adapter.py`: `provider-runtime` owns immutable request-scoped native values, alias grammar/collision rejection, reverse decoding, dotted-id round-trip, and semantic-schema fidelity across every supported engine against the exact `llm-tools` dependency |
 | packaging | `tests/test_package.py`: built-wheel isolated install proves old import absent and public facade complete |
 | consumers | Nexus owns `python/tests/llm_tools_contract/test_pinned_llm_tools.py`; Ariel owns `tests/test_llm_tools_contract.py`; both materialize the exact SHA and prove import plus one public behavior |
@@ -607,7 +628,8 @@ One opt-in `tests/live/test_brave_canary.py` release canary calls the real Brave
 API and checks the minimal contract, credential/quota behavior, provenance, and
 a fixed cost ceiling. When a named production profile enables `web.read`, its
 protected release also runs `tests/live/test_web_read_canary.py` against an
-owned public HTTPS redirect fixture and checks the actual peer, hop, bounds, and receipt.
+owned public HTTPS redirect fixture and checks the exact v2 binding revision, extraction locator,
+actual peer, hop, bounds, and receipt.
 Missing credentials or fixture availability mean `not_run`, never pass; a
 required enablement gate cannot promote on `not_run`.
 Protected live owners override the default socket denial only for the exact

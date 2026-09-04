@@ -156,6 +156,15 @@ replacing cancellation violates the provider contract. Unexpected provider `Time
 external task cancellation are not normalized by the binding and retain the executor's recovery
 semantics.
 
+`bind_web_read(reader)` carries implementation revision `llm-tools-web-read-v2`. Plain-text
+extraction decodes only the declared character set and collapses whitespace: entity-looking text
+and markup remain literal data. HTML/XHTML extraction delegates its sole entity-decoding pass to
+`HTMLParser(convert_charrefs=True)`, then collapses whitespace without re-decoding parser output.
+The evidence locator records these algorithms as `plain-text-v2` and `html-visible-text-v2`;
+unchanged canonical JSON extraction remains `json-canonical-v1`. The Web-reader policy inputs and
+`web-read-v1` policy epoch are unchanged because accepted media and direct-network policy did not
+change.
+
 ## Activation and security
 
 Importing `llm_tools` grants nothing: the package ships no ambient registry or default profile, so
@@ -168,6 +177,8 @@ all four tools remain inactive until a host explicitly composes bindings and gra
 - `web.read` requires `bind_web_read(SafeWebReader())`, a profile grant, an application-owned
   information-flow policy, and protected live release proof. Its network controls mitigate SSRF;
   they do not decide whether private application data may be disclosed to an external destination.
+  Consumers pinned to `llm-tools-web-read-v1` must update that expected implementation revision and
+  rebuild their frozen profile and plan after upgrading the package commit.
 - `tool.search` and `tool.read` require `TOOL_FAMILY`, grants for both discovery tools and every
   target, and a `Discoverable` plan with explicit targets and a publication cap. Discovery reveals
   existing authority; it never grants authority.

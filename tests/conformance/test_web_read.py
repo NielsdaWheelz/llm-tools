@@ -255,6 +255,15 @@ def test_model_visible_read_contract_states_security_and_non_persistence() -> No
             WebReadLimits(deadline_seconds=deadline)  # type: ignore[arg-type]
 
 
+def test_web_read_binding_revision_records_entity_extraction_behavior() -> None:
+    available = bind_web_read(SafeWebReader(resolver=StaticResolver({})))
+    unavailable = web_family().bindings[1]
+
+    assert available.implementation_revision == "llm-tools-web-read-v2"
+    assert unavailable.implementation_revision == "llm-tools-web-read-v2"
+    assert available.policy_revision == unavailable.policy_revision
+
+
 @pytest.mark.asyncio
 async def test_every_schema_valid_4096_character_url_reaches_typed_url_validation() -> None:
     binding = bind_web_read(SafeWebReader(resolver=StaticResolver({})))
@@ -319,7 +328,7 @@ async def test_cross_authority_redirect_revalidates_dns_host_and_evidence() -> N
     locator = json.loads(result.value.evidence.locator)
     assert locator == {
         "content_encoding": "identity",
-        "extraction": "html-visible-text-v1",
+        "extraction": "html-visible-text-v2",
         "representation": "decoded-entity-bytes",
         "text_truncated": False,
         "text_utf8_bytes": len(result.value.text.encode()),
@@ -492,6 +501,60 @@ async def test_profile_zero_attempt_grant_fails_without_reader_dispatch() -> Non
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
+    ("body", "content_type", "expected_text", "expected_title"),
+    [
+        (
+            (
+                b"literal &amp;amp; | named &amp; | decimal &#38; | "
+                b"nested-decimal &amp;#38; | hex &#x26; | nested-hex &amp;#x26; | "
+                b"<script>plain()</script> <b>literal</b>"
+            ),
+            "text/plain",
+            (
+                "literal &amp;amp; | named &amp; | decimal &#38; | "
+                "nested-decimal &amp;#38; | hex &#x26; | nested-hex &amp;#x26; | "
+                "<script>plain()</script> <b>literal</b>"
+            ),
+            None,
+        ),
+        (
+            (
+                b"<html><head><title>Nested &amp;amp; title</title></head><body>"
+                b"<p>literal &amp;amp; | named &amp; | decimal &#38; | "
+                b"nested-decimal &amp;#38; | hex &#x26; | nested-hex &amp;#x26; | "
+                b"encoded &amp;lt;script&amp;gt;still text&amp;lt;/script&amp;gt;</p>"
+                b"<script>discard()</script></body></html>"
+            ),
+            "text/html",
+            (
+                "Nested &amp; title literal &amp; | named & | decimal & | "
+                "nested-decimal &#38; | hex & | nested-hex &#x26; | "
+                "encoded &lt;script&gt;still text&lt;/script&gt;"
+            ),
+            "Nested &amp; title",
+        ),
+    ],
+)
+async def test_entity_decoding_is_media_appropriate_and_single_pass(
+    body: bytes,
+    content_type: str,
+    expected_text: str,
+    expected_title: str | None,
+) -> None:
+    async with LoopbackServer(_response(body, content_type=content_type)) as server:
+        result = await SafeWebReader(
+            resolver=StaticResolver({"entities.test": (PUBLIC_A,)}),
+            connector=MappedConnector({"entities.test": server.port}),
+        ).read("http://entities.test/")
+
+    assert result.value.text == expected_text
+    assert result.value.title == expected_title
+    assert result.value.media_type == content_type
+    assert len(server.requests) == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
     ("body", "content_type", "encoding", "expected_text", "expected_extraction"),
     [
         (
@@ -499,7 +562,7 @@ async def test_profile_zero_attempt_grant_fails_without_reader_dispatch() -> Non
             "text/plain",
             "gzip",
             "compressed text",
-            "plain-text-v1",
+            "plain-text-v2",
         ),
         (
             zlib.compress(b'{"z":1,"a":2}'),

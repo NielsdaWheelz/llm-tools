@@ -56,6 +56,8 @@ from llm_tools.web.reader import SafeWebReader
 _WEB_SEARCH_OPERATION_DEADLINE_SECONDS = 12.0
 _WEB_SEARCH_IMPLEMENTATION_REVISION = "llm-tools-web-search-v2"
 _WEB_SEARCH_POLICY_EPOCH = PolicyEpoch("web-search-v2")
+_WEB_READ_IMPLEMENTATION_REVISION = "llm-tools-web-read-v2"
+_WEB_READ_POLICY_EPOCH = PolicyEpoch("web-read-v1")
 
 WEB_SEARCH_SPEC = ToolSpec[WebSearchInput, WebSearchSuccess, WebSearchToolError](
     id=ToolId("web.search"),
@@ -265,8 +267,8 @@ def bind_web_read(
         spec=WEB_READ_SPEC,
         execute=Available(execute),
         replay_policy=ReplayPolicy.ReDispatchable,
-        implementation_revision="llm-tools-web-read-v1",
-        policy_epoch=PolicyEpoch("web-read-v1"),
+        implementation_revision=_WEB_READ_IMPLEMENTATION_REVISION,
+        policy_epoch=_WEB_READ_POLICY_EPOCH,
         policy_inputs={
             "accepted_media": [
                 "application/json",
@@ -303,8 +305,8 @@ def web_family(
         spec=WEB_READ_SPEC,
         execute=Unavailable("public Web reading is disabled by host policy"),
         replay_policy=ReplayPolicy.ReDispatchable,
-        implementation_revision="llm-tools-web-read-v1",
-        policy_epoch=PolicyEpoch("web-read-v1"),
+        implementation_revision=_WEB_READ_IMPLEMENTATION_REVISION,
+        policy_epoch=_WEB_READ_POLICY_EPOCH,
         policy_inputs={
             "accepted_media": [
                 "application/json",
