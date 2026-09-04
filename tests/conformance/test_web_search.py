@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator
+import asyncio
+from collections.abc import AsyncIterator, Callable
 from datetime import datetime
 
 import httpx
@@ -14,6 +15,7 @@ from llm_tools.execution import (
     InvocationPosition,
     ParsedJson,
     Principal,
+    RecoveryRequired,
     Scope,
     ToolExecutor,
 )
@@ -31,6 +33,7 @@ from llm_tools.web.contracts import (
     RateLimited,
     UpstreamUnavailable,
     WebSearchRequest,
+    WebSearchResponse,
     WebSearchResultType,
 )
 from llm_tools.web.tools import WEB_SEARCH_SPEC, bind_brave_web_search, web_family
@@ -162,6 +165,76 @@ async def test_model_binding_remains_capped_at_ten_results(
 
 
 @pytest.mark.asyncio
+async def test_operation_deadline_is_validated_and_frozen_into_policy_identity(
+    search_client: httpx.AsyncClient,
+) -> None:
+    provider = BraveSearchProvider(search_client, api_key="test-key")
+
+    default = bind_brave_web_search(provider)
+    explicit_default = bind_brave_web_search(provider, operation_deadline_seconds=12)
+    tightened = bind_brave_web_search(provider, operation_deadline_seconds=11.5)
+    unavailable = web_family().bindings[0]
+
+    assert default.policy_inputs["operation_deadline_seconds"] == 12.0
+    assert unavailable.policy_inputs["operation_deadline_seconds"] == 12.0
+    assert default.implementation_revision == "llm-tools-web-search-v2"
+    assert default.policy_epoch == "web-search-v2"
+    assert default.policy_revision == explicit_default.policy_revision
+    assert default.policy_revision == unavailable.policy_revision
+    assert tightened.policy_revision != default.policy_revision
+    assert tightened.spec.tool_contract_revision == default.spec.tool_contract_revision
+    assert tightened.implementation_revision == default.implementation_revision
+    assert _context(tightened).plan.profile.profile_revision != (
+        _context(default).plan.profile.profile_revision
+    )
+    assert _context(tightened).plan.plan_revision != _context(default).plan.plan_revision
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("value", "error"),
+    [
+        (True, TypeError),
+        ("12", TypeError),
+        (0, ValueError),
+        (-1, ValueError),
+        (float("nan"), ValueError),
+        (float("inf"), ValueError),
+        (12.001, ValueError),
+        (WEB_SEARCH_SPEC.limits.deadline_seconds - 0.001, ValueError),
+        (WEB_SEARCH_SPEC.limits.deadline_seconds, ValueError),
+        (WEB_SEARCH_SPEC.limits.deadline_seconds + 0.001, ValueError),
+    ],
+)
+async def test_operation_deadline_rejects_invalid_or_non_inner_values(
+    search_client: httpx.AsyncClient,
+    value: object,
+    error: type[Exception],
+) -> None:
+    provider = BraveSearchProvider(search_client, api_key="test-key")
+
+    with pytest.raises(error, match="operation_deadline_seconds"):
+        bind_brave_web_search(
+            provider,
+            operation_deadline_seconds=value,  # type: ignore[arg-type]
+        )
+
+
+@pytest.mark.asyncio
+async def test_operation_deadline_preserves_guard_before_executor_deadline(
+    search_client: httpx.AsyncClient,
+) -> None:
+    deadline = WEB_SEARCH_SPEC.limits.deadline_seconds - 3.0
+
+    binding = bind_brave_web_search(
+        BraveSearchProvider(search_client, api_key="test-key"),
+        operation_deadline_seconds=deadline,
+    )
+
+    assert binding.policy_inputs["operation_deadline_seconds"] == deadline
+
+
+@pytest.mark.asyncio
 async def test_binding_preserves_rank_identity_provenance_and_attempt_count(
     search_client: httpx.AsyncClient,
 ) -> None:
@@ -216,6 +289,11 @@ async def test_binding_preserves_rank_identity_provenance_and_attempt_count(
         ([httpx.Response(429), httpx.Response(429)], RateLimited, 2),
         ([httpx.Response(503), httpx.Response(503)], UpstreamUnavailable, 2),
         ([httpx.Response(200, content=b"not-json")], InvalidUpstreamResponse, 1),
+        (
+            [httpx.Response(503), httpx.Response(200, json=[])],
+            InvalidUpstreamResponse,
+            2,
+        ),
     ],
 )
 async def test_binding_maps_only_closed_safe_errors(
@@ -247,6 +325,280 @@ async def test_binding_maps_only_closed_safe_errors(
     record = context.recorder.record(context.position)
     assert record.settlement is not None
     assert record.settlement.actual_attempts == attempts
+
+
+@pytest.mark.asyncio
+async def test_operation_deadline_terminalizes_instead_of_requiring_owner_recovery() -> None:
+    calls = 0
+
+    async def transcript(_request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        await asyncio.Event().wait()
+        raise AssertionError("an indefinitely blocked request must be cancelled")
+
+    async with httpx.AsyncClient(
+        transport=httpx.MockTransport(transcript), trust_env=False
+    ) as client:
+        binding = bind_brave_web_search(
+            BraveSearchProvider(client, api_key="test-key"),
+            operation_deadline_seconds=0.05,
+        )
+        context = _context(binding, position="turn-1/search-operation-deadline")
+        raw = ParsedJson({"query": "blocked upstream", "freshness_days": None})
+
+        result = await ToolExecutor.execute(binding, raw, context)
+        replayed = await ToolExecutor.execute(binding, raw, context)
+
+    assert result == {"type": "Failure", "error": {"type": "UpstreamUnavailable"}}
+    assert replayed is result
+    assert calls == 1
+    assert isinstance(context.recorder, InMemoryPositionRecorder)
+    record = context.recorder.record(context.position)
+    assert record.terminal_result is result
+    assert record.terminal_commits == 1
+    assert record.uncertain is False
+    assert record.in_flight is False
+    assert record.settlement is not None
+    assert record.settlement.actual_attempts == 1
+    assert isinstance(context.budgets, InMemoryBudgetState)
+    assert context.budgets.actual_external_attempts == 1
+    assert context.budgets.reserved_external_attempts == 0
+
+
+@pytest.mark.asyncio
+async def test_operation_deadline_reports_both_started_attempts() -> None:
+    calls = 0
+
+    async def transcript(_request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return httpx.Response(503, headers={"Retry-After": "0"})
+        await asyncio.Event().wait()
+        raise AssertionError("the second blocked request must be cancelled")
+
+    async with httpx.AsyncClient(
+        transport=httpx.MockTransport(transcript), trust_env=False
+    ) as client:
+        binding = bind_brave_web_search(
+            BraveSearchProvider(client, api_key="test-key"),
+            operation_deadline_seconds=0.05,
+        )
+        context = _context(binding, position="turn-1/search-second-attempt-deadline")
+
+        result = await ToolExecutor.execute(
+            binding,
+            ParsedJson({"query": "second attempt timeout", "freshness_days": None}),
+            context,
+        )
+
+    assert result == {"type": "Failure", "error": {"type": "UpstreamUnavailable"}}
+    assert calls == 2
+    assert isinstance(context.recorder, InMemoryPositionRecorder)
+    record = context.recorder.record(context.position)
+    assert record.terminal_result is result
+    assert record.uncertain is False
+    assert record.in_flight is False
+    assert record.settlement is not None
+    assert record.settlement.actual_attempts == 2
+
+
+@pytest.mark.asyncio
+async def test_operation_deadline_covers_retry_backoff_with_accurate_attempts() -> None:
+    calls = 0
+
+    async def transcript(_request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        return httpx.Response(503, headers={"Retry-After": "2"})
+
+    async with httpx.AsyncClient(
+        transport=httpx.MockTransport(transcript), trust_env=False
+    ) as client:
+        binding = bind_brave_web_search(
+            BraveSearchProvider(client, api_key="test-key"),
+            operation_deadline_seconds=0.05,
+        )
+        context = _context(binding, position="turn-1/search-backoff-deadline")
+
+        result = await ToolExecutor.execute(
+            binding,
+            ParsedJson({"query": "bounded backoff", "freshness_days": None}),
+            context,
+        )
+
+    assert result == {"type": "Failure", "error": {"type": "UpstreamUnavailable"}}
+    assert calls == 1
+    assert isinstance(context.recorder, InMemoryPositionRecorder)
+    record = context.recorder.record(context.position)
+    assert record.terminal_result is result
+    assert record.uncertain is False
+    assert record.in_flight is False
+    assert record.settlement is not None
+    assert record.settlement.actual_attempts == 1
+
+
+@pytest.mark.asyncio
+async def test_unexpected_outer_timeout_still_requires_billed_once_recovery() -> None:
+    calls = 0
+
+    async def transcript(_request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        await asyncio.Event().wait()
+        raise AssertionError("an indefinitely blocked request must be cancelled")
+
+    async with httpx.AsyncClient(
+        transport=httpx.MockTransport(transcript), trust_env=False
+    ) as client:
+        binding = bind_brave_web_search(
+            BraveSearchProvider(client, api_key="test-key"),
+            operation_deadline_seconds=0.5,
+        )
+        outer_first = WEB_SEARCH_SPEC.limits.tightened(deadline_seconds=0.05)
+        context = _context(
+            binding,
+            tool_limits=outer_first,
+            position="turn-1/search-unexpected-outer-timeout",
+        )
+
+        with pytest.raises(RecoveryRequired, match="uncertain"):
+            await ToolExecutor.execute(
+                binding,
+                ParsedJson({"query": "unexpected timeout", "freshness_days": None}),
+                context,
+            )
+
+    assert calls == 1
+    assert isinstance(context.recorder, InMemoryPositionRecorder)
+    record = context.recorder.record(context.position)
+    assert record.terminal_result is None
+    assert record.settlement is None
+    assert record.uncertain is True
+
+
+@pytest.mark.asyncio
+async def test_provider_timeout_still_requires_billed_once_recovery() -> None:
+    class UnexpectedTimeoutProvider:
+        async def search(
+            self,
+            request: WebSearchRequest,
+            *,
+            attempt_started: Callable[[], None] | None = None,
+        ) -> WebSearchResponse:
+            del request
+            assert attempt_started is not None
+            attempt_started()
+            raise TimeoutError("provider violated the normalized error contract")
+
+    binding = bind_brave_web_search(
+        UnexpectedTimeoutProvider(),
+        operation_deadline_seconds=0.5,
+    )
+    context = _context(binding, position="turn-1/search-provider-timeout")
+
+    with pytest.raises(RecoveryRequired, match="uncertain"):
+        await ToolExecutor.execute(
+            binding,
+            ParsedJson({"query": "unexpected timeout", "freshness_days": None}),
+            context,
+        )
+
+    assert isinstance(context.recorder, InMemoryPositionRecorder)
+    record = context.recorder.record(context.position)
+    assert record.terminal_result is None
+    assert record.settlement is None
+    assert record.uncertain is True
+    assert record.in_flight is False
+
+
+@pytest.mark.asyncio
+async def test_external_cancellation_still_leaves_billed_once_recovery_state() -> None:
+    started = asyncio.Event()
+    calls = 0
+
+    async def transcript(_request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        started.set()
+        await asyncio.Event().wait()
+        raise AssertionError("the cancelled request must not resume")
+
+    async with httpx.AsyncClient(
+        transport=httpx.MockTransport(transcript), trust_env=False
+    ) as client:
+        binding = bind_brave_web_search(
+            BraveSearchProvider(client, api_key="test-key"),
+            operation_deadline_seconds=0.5,
+        )
+        context = _context(binding, position="turn-1/search-cancelled")
+        task = asyncio.create_task(
+            ToolExecutor.execute(
+                binding,
+                ParsedJson({"query": "cancelled search", "freshness_days": None}),
+                context,
+            )
+        )
+        await started.wait()
+        task.cancel()
+
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    assert calls == 1
+    assert isinstance(context.recorder, InMemoryPositionRecorder)
+    record = context.recorder.record(context.position)
+    assert record.terminal_result is None
+    assert record.settlement is None
+    assert record.uncertain is True
+    assert record.in_flight is False
+
+
+@pytest.mark.asyncio
+async def test_expired_operation_cannot_return_success_after_suppressing_cancellation() -> None:
+    class SuppressingProvider:
+        async def search(
+            self,
+            request: WebSearchRequest,
+            *,
+            attempt_started: Callable[[], None] | None = None,
+        ) -> WebSearchResponse:
+            del request
+            assert attempt_started is not None
+            attempt_started()
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                pass
+            return WebSearchResponse(
+                results=(),
+                provider="brave",
+                provider_request_id=None,
+                retrieved_at="2026-09-04T12:00:00Z",
+                attempts=1,
+            )
+
+    binding = bind_brave_web_search(
+        SuppressingProvider(),
+        operation_deadline_seconds=0.05,
+    )
+    context = _context(binding, position="turn-1/search-suppressed-timeout")
+
+    result = await ToolExecutor.execute(
+        binding,
+        ParsedJson({"query": "suppressed cancellation", "freshness_days": None}),
+        context,
+    )
+
+    assert result == {"type": "Failure", "error": {"type": "UpstreamUnavailable"}}
+    assert isinstance(context.recorder, InMemoryPositionRecorder)
+    record = context.recorder.record(context.position)
+    assert record.terminal_result is result
+    assert record.uncertain is False
+    assert record.in_flight is False
+    assert record.settlement is not None
+    assert record.settlement.actual_attempts == 1
 
 
 @pytest.mark.asyncio
@@ -292,6 +644,10 @@ async def test_profile_tightened_attempt_limit_reaches_brave() -> None:
 
     assert result == {"type": "Failure", "error": {"type": "UpstreamUnavailable"}}
     assert calls == 1
+    assert isinstance(context.recorder, InMemoryPositionRecorder)
+    settlement = context.recorder.record(context.position).settlement
+    assert settlement is not None
+    assert settlement.actual_attempts == 1
 
 
 @pytest.mark.asyncio

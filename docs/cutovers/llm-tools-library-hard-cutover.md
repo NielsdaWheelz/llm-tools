@@ -345,7 +345,7 @@ Every tool also exposes the common `BoundaryError` union:
 
 | Id | Effect / replay | Input | Success | Closed `ErrorT` | Default ceiling |
 |---|---|---|---|---|---|
-| `web.search` | Read / `BilledOnce` | query plus required-nullable freshness days | ranked normalized results plus provider/request identity | `RateLimited | UpstreamUnavailable | InvalidUpstreamResponse` | query 2–400 chars/50 words; 10 results; 2 provider attempts; 15 s; 32 KiB output |
+| `web.search` | Read / `BilledOnce` | query plus required-nullable freshness days | ranked normalized results plus provider/request identity | `RateLimited | UpstreamUnavailable | InvalidUpstreamResponse` | query 2–400 chars/50 words; 10 results; 2 provider attempts; 12 s binding operation inside 15 s executor; 32 KiB output |
 | `web.read` | Read / `ReDispatchable` | one normalized public `http` or `https` URL | final URL, title, media type, extracted text, Web evidence | `InvalidUrl | UnsafeDestination | UnsupportedContent | TooLarge | RateLimited | UpstreamUnavailable | InvalidUpstreamResponse` | URL 4,096 chars; 5 redirects; 8 total network requests, including at most 2 pre-body transport retries overall; 2 MiB wire; 4 MiB decoded; 64 KiB text; 20 s |
 | `tool.search` | Pure / `ReDispatchable` | query 0–200 chars, required-nullable family prefix, limit 1–20 | matching granted ids, families, summaries, effects, and input synopsis | no declared domain failure | 20 results; 16 KiB; 2 s |
 | `tool.read` | Pure / `ReDispatchable` | one canonical id | full granted declaration, semantic/presentation schemas, documentation, and effective limits | no declared domain failure | 64 KiB; 2 s |
@@ -359,6 +359,20 @@ requires an explicitly supplied credential; a host may instead bind the
 declared tool as unavailable. Retry policy has one library owner; SDK/client
 retries remain disabled. Invalid input is the common boundary error, and raw
 provider messages never enter a model-visible failure.
+
+The Brave binding owns a positive finite `operation_deadline_seconds` policy
+input, defaulting to 12 seconds and required to remain strictly below the
+declaration's 15-second executor deadline. Twelve seconds is also the maximum:
+host policy may tighten the operation deadline but cannot consume the deliberate
+three-second guard band. Its scope contains the complete provider operation,
+including all request attempts and retry backoff. The provider reports every
+started external attempt through the binding-supplied callback and must
+propagate task cancellation unchanged. Expected expiry therefore terminalizes
+as the declared `UpstreamUnavailable` with exact attempt accounting before the
+executor timer; unexpected outer timeout and external cancellation retain
+`BilledOnce` uncertainty and recovery semantics. A consumer may
+independently tighten the effective attempt ceiling to one; that deployment
+choice does not belong in the portable declaration.
 
 `tool.search/read` inspect an immutable view filtered by both the profile grants
 and that plan's frozen `Discoverable.targets`. Search

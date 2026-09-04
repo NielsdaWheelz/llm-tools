@@ -6,6 +6,7 @@ import asyncio
 import hashlib
 import json
 import math
+from collections.abc import Callable
 from datetime import UTC, datetime
 from typing import Any
 from urllib.parse import parse_qsl, quote, urlencode, urlsplit, urlunsplit
@@ -51,9 +52,16 @@ class BraveSearchProvider:
         if not math.isfinite(self._timeout_seconds) or self._timeout_seconds <= 0:
             raise ValueError("Brave Search timeout_seconds must be positive and finite")
 
-    async def search(self, request: WebSearchRequest) -> WebSearchResponse:
+    async def search(
+        self,
+        request: WebSearchRequest,
+        *,
+        attempt_started: Callable[[], None] | None = None,
+    ) -> WebSearchResponse:
         last_error: WebSearchError | None = None
         for attempt in range(request.max_attempts):
+            if attempt_started is not None:
+                attempt_started()
             try:
                 async with self._client.stream(
                     "GET",
@@ -74,6 +82,7 @@ class BraveSearchProvider:
                         WebSearchErrorCode.BAD_RESPONSE,
                         "Brave Search returned malformed JSON",
                         provider=_PROVIDER,
+                        attempts=attempt + 1,
                     )
                 return self._response_from_json(
                     data,

@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
+import math
 from datetime import datetime
 from typing import cast
 
@@ -50,6 +52,10 @@ from llm_tools.web.contracts import (
     WebSearchToolError,
 )
 from llm_tools.web.reader import SafeWebReader
+
+_WEB_SEARCH_OPERATION_DEADLINE_SECONDS = 12.0
+_WEB_SEARCH_IMPLEMENTATION_REVISION = "llm-tools-web-search-v2"
+_WEB_SEARCH_POLICY_EPOCH = PolicyEpoch("web-search-v2")
 
 WEB_SEARCH_SPEC = ToolSpec[WebSearchInput, WebSearchSuccess, WebSearchToolError](
     id=ToolId("web.search"),
@@ -100,8 +106,9 @@ def bind_brave_web_search(
     provider: WebSearchProvider,
     *,
     max_results: int = 10,
+    operation_deadline_seconds: float = _WEB_SEARCH_OPERATION_DEADLINE_SECONDS,
 ) -> ToolBinding[WebSearchInput, WebSearchSuccess, WebSearchToolError]:
-    """Bind explicit Brave credentials and host result policy to ``web.search``."""
+    """Bind Brave search with host result policy and an inner operation deadline."""
 
     if (
         isinstance(max_results, bool)
@@ -109,6 +116,19 @@ def bind_brave_web_search(
         or not 1 <= max_results <= 10
     ):
         raise ValueError("web.search max_results must be between 1 and 10")
+    if isinstance(operation_deadline_seconds, bool) or not isinstance(
+        operation_deadline_seconds, (int, float)
+    ):
+        raise TypeError("web.search operation_deadline_seconds must be numeric")
+    operation_deadline_seconds = float(operation_deadline_seconds)
+    if not math.isfinite(operation_deadline_seconds) or operation_deadline_seconds <= 0:
+        raise ValueError("web.search operation_deadline_seconds must be positive and finite")
+    if operation_deadline_seconds > _WEB_SEARCH_OPERATION_DEADLINE_SECONDS:
+        raise ValueError(
+            "web.search operation_deadline_seconds must not exceed "
+            f"{_WEB_SEARCH_OPERATION_DEADLINE_SECONDS} seconds, preserving the guard before "
+            f"the {WEB_SEARCH_SPEC.limits.deadline_seconds}-second executor deadline"
+        )
 
     async def execute(
         value: WebSearchInput,
@@ -116,20 +136,37 @@ def bind_brave_web_search(
     ) -> HandlerSuccess[WebSearchSuccess]:
         if context.grant.limits.max_attempts == 0:
             raise DeclaredToolFailure(UpstreamUnavailable(), actual_attempts=0)
+        attempts = 0
+
+        def attempt_started() -> None:
+            nonlocal attempts
+            attempts += 1
+            if attempts > context.grant.limits.max_attempts:
+                raise RuntimeError("Web search provider exceeded its granted attempt limit")
+
+        operation_timeout = asyncio.timeout(operation_deadline_seconds)
         try:
-            response = await provider.search(
-                WebSearchRequest(
-                    query=value.query,
-                    result_type=WebSearchResultType.MIXED,
-                    limit=max_results,
-                    freshness_days=value.freshness_days,
-                    country="US",
-                    search_lang="en",
-                    safe_search="moderate",
-                    max_attempts=context.grant.limits.max_attempts,
+            async with operation_timeout:
+                response = await provider.search(
+                    WebSearchRequest(
+                        query=value.query,
+                        result_type=WebSearchResultType.MIXED,
+                        limit=max_results,
+                        freshness_days=value.freshness_days,
+                        country="US",
+                        search_lang="en",
+                        safe_search="moderate",
+                        max_attempts=context.grant.limits.max_attempts,
+                    ),
+                    attempt_started=attempt_started,
                 )
-            )
+        except TimeoutError as exc:
+            if not operation_timeout.expired():
+                raise
+            raise DeclaredToolFailure(UpstreamUnavailable(), actual_attempts=attempts) from exc
         except WebSearchError as exc:
+            if exc.attempts != attempts:
+                raise RuntimeError("Web search provider reported inconsistent attempts") from exc
             if exc.code in {
                 WebSearchErrorCode.INVALID_KEY,
                 WebSearchErrorCode.INVALID_REQUEST,
@@ -145,6 +182,11 @@ def bind_brave_web_search(
             else:
                 error = InvalidUpstreamResponse()
             raise DeclaredToolFailure(error, actual_attempts=exc.attempts) from exc
+
+        if operation_timeout.expired():
+            raise DeclaredToolFailure(UpstreamUnavailable(), actual_attempts=attempts)
+        if response.attempts != attempts:
+            raise RuntimeError("Web search provider reported inconsistent attempts")
 
         base = WebSearchSuccess(
             results=(),
@@ -181,9 +223,14 @@ def bind_brave_web_search(
         spec=WEB_SEARCH_SPEC,
         execute=Available(execute),
         replay_policy=ReplayPolicy.BilledOnce,
-        implementation_revision="llm-tools-web-search-v1",
-        policy_epoch=PolicyEpoch("web-search-v1"),
-        policy_inputs={"locale": "US/en", "max_results": max_results, "safe_search": "moderate"},
+        implementation_revision=_WEB_SEARCH_IMPLEMENTATION_REVISION,
+        policy_epoch=_WEB_SEARCH_POLICY_EPOCH,
+        policy_inputs={
+            "locale": "US/en",
+            "max_results": max_results,
+            "operation_deadline_seconds": operation_deadline_seconds,
+            "safe_search": "moderate",
+        },
     )
 
 
@@ -243,9 +290,14 @@ def web_family(
         spec=WEB_SEARCH_SPEC,
         execute=Unavailable("Brave credential was not supplied by the host"),
         replay_policy=ReplayPolicy.BilledOnce,
-        implementation_revision="llm-tools-web-search-v1",
-        policy_epoch=PolicyEpoch("web-search-v1"),
-        policy_inputs={"locale": "US/en", "max_results": 10, "safe_search": "moderate"},
+        implementation_revision=_WEB_SEARCH_IMPLEMENTATION_REVISION,
+        policy_epoch=_WEB_SEARCH_POLICY_EPOCH,
+        policy_inputs={
+            "locale": "US/en",
+            "max_results": 10,
+            "operation_deadline_seconds": _WEB_SEARCH_OPERATION_DEADLINE_SECONDS,
+            "safe_search": "moderate",
+        },
     )
     read_binding = read or ToolBinding(
         spec=WEB_READ_SPEC,

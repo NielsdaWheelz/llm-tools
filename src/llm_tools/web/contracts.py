@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime
 from enum import StrEnum
@@ -149,7 +150,15 @@ class WebSearchResponse:
 
 
 class WebSearchProvider(Protocol):
-    async def search(self, request: WebSearchRequest) -> WebSearchResponse: ...
+    async def search(
+        self,
+        request: WebSearchRequest,
+        *,
+        attempt_started: Callable[[], None] | None = None,
+    ) -> WebSearchResponse:
+        """Report attempts before dispatch and propagate task cancellation unchanged."""
+
+        ...
 
 
 class _StrictModel(BaseModel):

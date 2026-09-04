@@ -50,7 +50,10 @@ from llm_tools.testing import (
 
 async def search_once(api_key: str) -> None:
     async with httpx.AsyncClient(trust_env=False) as client:
-        binding = bind_brave_web_search(BraveSearchProvider(client, api_key=api_key))
+        binding = bind_brave_web_search(
+            BraveSearchProvider(client, api_key=api_key),
+            operation_deadline_seconds=12.0,
+        )
         catalog = ToolCatalog.compose((web_family(search=binding),))
         profile = CapabilityProfile(
             id=ProfileId("demo-web"),
@@ -139,13 +142,29 @@ timeouts retain their existing uncertain state. Write handlers must let an ambig
 only when they can prove no effect occurred; returning a terminal domain failure for an ambiguous
 provider outcome is invalid.
 
+`bind_brave_web_search(provider, *, max_results=10, operation_deadline_seconds=12.0)` owns a
+whole-search deadline that includes every Brave request and retry delay. The value must be positive,
+finite, and at most 12 seconds; host policy may tighten it but cannot consume the deliberate
+three-second guard before `web.search`'s 15-second executor deadline. It is included in the binding
+policy revision and therefore in frozen profile and plan identity. On expiration, the binding
+returns the declared `UpstreamUnavailable` failure with the number of external attempts actually
+started; it does not expose the expected inner expiration as an uncertain executor timeout.
+Implementations of `WebSearchProvider.search` used by this binding must accept the optional
+keyword-only `attempt_started` callback and invoke it synchronously exactly once immediately before
+each external attempt. They must also propagate task cancellation unchanged; suppressing or
+replacing cancellation violates the provider contract. Unexpected provider `TimeoutError` and
+external task cancellation are not normalized by the binding and retain the executor's recovery
+semantics.
+
 ## Activation and security
 
 Importing `llm_tools` grants nothing: the package ships no ambient registry or default profile, so
 all four tools remain inactive until a host explicitly composes bindings and grants.
 
 - `web.search` requires an explicitly configured provider credential, binding, and profile grant.
-  Missing credentials may leave its binding unavailable without preventing process boot.
+  Missing credentials may leave its binding unavailable without preventing process boot. Its
+  portable declaration retains the two-attempt ceiling; a host may tighten the effective grant to
+  one attempt without changing the declaration or binding policy.
 - `web.read` requires `bind_web_read(SafeWebReader())`, a profile grant, an application-owned
   information-flow policy, and protected live release proof. Its network controls mitigate SSRF;
   they do not decide whether private application data may be disclosed to an external destination.
