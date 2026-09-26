@@ -18,6 +18,7 @@ PUBLIC_FACADE = {
     "BudgetState",
     "Cancellation",
     "CapabilityProfile",
+    "CredentialRejected",
     "DirectConnector",
     "DeclaredToolFailure",
     "Discoverable",

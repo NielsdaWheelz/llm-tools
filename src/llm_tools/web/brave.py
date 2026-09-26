@@ -28,6 +28,7 @@ _RETRY_BACKOFF_SECONDS = 0.25
 _MAX_RETRY_AFTER_SECONDS = 2.0
 # httpx decodes Content-Encoding before yielding response bytes.
 _MAX_DECODED_RESPONSE_BYTES = 2 * 1_024 * 1_024
+_MAX_ERROR_BODY_BYTES = 4 * 1_024
 
 
 class BraveSearchProvider:
@@ -75,6 +76,14 @@ class BraveSearchProvider:
                     follow_redirects=False,
                     timeout=httpx.Timeout(self._timeout_seconds, connect=5.0),
                 ) as response:
+                    if response.status_code == 422 and await _invalid_token_rejected(response):
+                        raise WebSearchError(
+                            WebSearchErrorCode.CREDENTIAL_REJECTED,
+                            "Brave Search rejected its subscription token",
+                            provider=_PROVIDER,
+                            status_code=422,
+                            attempts=attempt + 1,
+                        )
                     response.raise_for_status()
                     data = json.loads(await _bounded_response_body(response))
                 if not isinstance(data, dict):
@@ -208,17 +217,42 @@ class BraveSearchProvider:
         )
 
 
-async def _bounded_response_body(response: httpx.Response) -> bytes:
+async def _bounded_response_body(
+    response: httpx.Response, *, max_bytes: int = _MAX_DECODED_RESPONSE_BYTES
+) -> bytes:
     content_length = response.headers.get("content-length")
     if content_length is not None:
-        if not content_length.isdigit() or int(content_length) > _MAX_DECODED_RESPONSE_BYTES:
+        if not content_length.isdigit() or int(content_length) > max_bytes:
             raise ValueError("Brave Search response exceeds the wire limit")
     body = bytearray()
     async for chunk in response.aiter_bytes():
         body.extend(chunk)
-        if len(body) > _MAX_DECODED_RESPONSE_BYTES:
+        if len(body) > max_bytes:
             raise ValueError("Brave Search response exceeds the wire limit")
     return bytes(body)
+
+
+async def _invalid_token_rejected(response: httpx.Response) -> bool:
+    def unique_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+        value: dict[str, Any] = {}
+        for name, member in pairs:
+            if name in value:
+                raise ValueError("Brave Search error contains duplicate JSON members")
+            value[name] = member
+        return value
+
+    try:
+        body = await _bounded_response_body(response, max_bytes=_MAX_ERROR_BODY_BYTES)
+        data = json.loads(body, object_pairs_hook=unique_object)
+    except (httpx.DecodingError, httpx.TransportError, UnicodeDecodeError, ValueError):
+        return False
+    error = data.get("error") if isinstance(data, dict) else None
+    return (
+        isinstance(error, dict)
+        and error.get("code") == "SUBSCRIPTION_TOKEN_INVALID"
+        and type(error.get("status")) is int
+        and error["status"] == 422
+    )
 
 
 def _provider_request_id(response: httpx.Response, data: dict[str, Any]) -> str | None:

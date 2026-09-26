@@ -32,6 +32,7 @@ from llm_tools.execution import (
 )
 from llm_tools.schema import canonical_json_bytes
 from llm_tools.web.contracts import (
+    CredentialRejected,
     InvalidUpstreamResponse,
     RateLimited,
     UpstreamUnavailable,
@@ -54,7 +55,7 @@ from llm_tools.web.contracts import (
 from llm_tools.web.reader import SafeWebReader
 
 _WEB_SEARCH_OPERATION_DEADLINE_SECONDS = 12.0
-_WEB_SEARCH_IMPLEMENTATION_REVISION = "llm-tools-web-search-v2"
+_WEB_SEARCH_IMPLEMENTATION_REVISION = "llm-tools-web-search-v3"
 _WEB_SEARCH_POLICY_EPOCH = PolicyEpoch("web-search-v2")
 _WEB_READ_IMPLEMENTATION_REVISION = "llm-tools-web-read-v2"
 _WEB_READ_POLICY_EPOCH = PolicyEpoch("web-read-v1")
@@ -169,6 +170,10 @@ def bind_brave_web_search(
         except WebSearchError as exc:
             if exc.attempts != attempts:
                 raise RuntimeError("Web search provider reported inconsistent attempts") from exc
+            if exc.code is WebSearchErrorCode.CREDENTIAL_REJECTED:
+                raise DeclaredToolFailure(
+                    CredentialRejected(), actual_attempts=exc.attempts
+                ) from exc
             if exc.code in {
                 WebSearchErrorCode.INVALID_KEY,
                 WebSearchErrorCode.INVALID_REQUEST,

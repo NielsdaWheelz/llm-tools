@@ -82,6 +82,7 @@ from .schema import SchemaDecodeError, canonical_json_bytes
 from .validation import validate_tool_input
 from .web.brave import BraveSearchProvider
 from .web.contracts import (
+    CredentialRejected,
     InvalidUpstreamResponse,
     InvalidUrl,
     RateLimited,
@@ -121,6 +122,7 @@ __all__ = [
     "BudgetState",
     "Cancellation",
     "CapabilityProfile",
+    "CredentialRejected",
     "Discoverable",
     "DirectConnector",
     "DeclaredToolFailure",

@@ -149,6 +149,9 @@ three-second guard before `web.search`'s 15-second executor deadline. It is incl
 policy revision and therefore in frozen profile and plan identity. On expiration, the binding
 returns the declared `UpstreamUnavailable` failure with the number of external attempts actually
 started; it does not expose the expected inner expiration as an uncertain executor timeout.
+An exact bounded Brave 422 `SUBSCRIPTION_TOKEN_INVALID` response instead settles once as
+`CredentialRejected` with the started attempt count. Other unrecognized 422 responses remain
+uncertain; neither case authorizes redispatch.
 Implementations of `WebSearchProvider.search` used by this binding must accept the optional
 keyword-only `attempt_started` callback and invoke it synchronously exactly once immediately before
 each external attempt. They must also propagate task cancellation unchanged; suppressing or

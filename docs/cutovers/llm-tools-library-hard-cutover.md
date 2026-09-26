@@ -345,7 +345,7 @@ Every tool also exposes the common `BoundaryError` union:
 
 | Id | Effect / replay | Input | Success | Closed `ErrorT` | Default ceiling |
 |---|---|---|---|---|---|
-| `web.search` | Read / `BilledOnce` | query plus required-nullable freshness days | ranked normalized results plus provider/request identity | `RateLimited | UpstreamUnavailable | InvalidUpstreamResponse` | query 2–400 chars/50 words; 10 results; 2 provider attempts; 12 s binding operation inside 15 s executor; 32 KiB output |
+| `web.search` | Read / `BilledOnce` | query plus required-nullable freshness days | ranked normalized results plus provider/request identity | `RateLimited | CredentialRejected | UpstreamUnavailable | InvalidUpstreamResponse` | query 2–400 chars/50 words; 10 results; 2 provider attempts; 12 s binding operation inside 15 s executor; 32 KiB output |
 | `web.read` | Read / `ReDispatchable` | one normalized public `http` or `https` URL | final URL, title, media type, extracted text, Web evidence | `InvalidUrl | UnsafeDestination | UnsupportedContent | TooLarge | RateLimited | UpstreamUnavailable | InvalidUpstreamResponse` | URL 4,096 chars; 5 redirects; 8 total network requests, including at most 2 pre-body transport retries overall; 2 MiB wire; 4 MiB decoded; 64 KiB text; 20 s |
 | `tool.search` | Pure / `ReDispatchable` | query 0–200 chars, required-nullable family prefix, limit 1–20 | matching granted ids, families, summaries, effects, and input synopsis | no declared domain failure | 20 results; 16 KiB; 2 s |
 | `tool.read` | Pure / `ReDispatchable` | one canonical id | full granted declaration, semantic/presentation schemas, documentation, and effective limits | no declared domain failure | 64 KiB; 2 s |
@@ -373,6 +373,9 @@ executor timer; unexpected outer timeout and external cancellation retain
 `BilledOnce` uncertainty and recovery semantics. A consumer may
 independently tighten the effective attempt ceiling to one; that deployment
 choice does not belong in the portable declaration.
+The exact bounded Brave 422 `SUBSCRIPTION_TOKEN_INVALID` response is a conclusive credential
+rejection: it settles as `CredentialRejected` with actual started attempts and no redispatch.
+Unknown or malformed 422 responses retain `BilledOnce` uncertainty.
 
 `tool.search/read` inspect an immutable view filtered by both the profile grants
 and that plan's frozen `Discoverable.targets`. Search

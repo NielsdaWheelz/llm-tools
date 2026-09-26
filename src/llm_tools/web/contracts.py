@@ -30,6 +30,7 @@ class WebSearchResultType(StrEnum):
 class WebSearchErrorCode(StrEnum):
     INVALID_REQUEST = "invalid_request"
     INVALID_KEY = "invalid_key"
+    CREDENTIAL_REJECTED = "credential_rejected"
     RATE_LIMITED = "rate_limited"
     TIMEOUT = "timeout"
     PROVIDER_DOWN = "provider_down"
@@ -264,6 +265,10 @@ class RateLimited(_StrictModel):
     type: Literal["RateLimited"] = "RateLimited"
 
 
+class CredentialRejected(_StrictModel):
+    type: Literal["CredentialRejected"] = "CredentialRejected"
+
+
 class UpstreamUnavailable(_StrictModel):
     type: Literal["UpstreamUnavailable"] = "UpstreamUnavailable"
 
@@ -272,7 +277,9 @@ class InvalidUpstreamResponse(_StrictModel):
     type: Literal["InvalidUpstreamResponse"] = "InvalidUpstreamResponse"
 
 
-type WebSearchToolError = RateLimited | UpstreamUnavailable | InvalidUpstreamResponse
+type WebSearchToolError = (
+    RateLimited | CredentialRejected | UpstreamUnavailable | InvalidUpstreamResponse
+)
 type WebReadToolError = (
     InvalidUrl
     | UnsafeDestination
