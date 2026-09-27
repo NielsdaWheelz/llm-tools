@@ -239,6 +239,11 @@ class HostTable:
 
 
 @dataclass(frozen=True, slots=True)
+class HttpApi:
+    """Expose frozen grants through an application-owned HTTP API."""
+
+
+@dataclass(frozen=True, slots=True)
 class Discoverable:
     targets: tuple[ToolId, ...]
     max_target_tools_published: int
@@ -251,7 +256,7 @@ class Discoverable:
             raise TypeError("discoverable publication ceiling must be an integer")
 
 
-type Exposure = Native | Discoverable | HostTable
+type Exposure = Native | Discoverable | HostTable | HttpApi
 
 
 @dataclass(frozen=True, slots=True)
@@ -365,7 +370,7 @@ def _exposure_projection(
     profile: FrozenCapabilityProfile,
     exposure: Exposure,
 ) -> tuple[tuple[ToolId, ...], JsonObject]:
-    if not isinstance(exposure, (Native, Discoverable, HostTable)):
+    if not isinstance(exposure, (Native, Discoverable, HostTable, HttpApi)):
         raise TypeError("plan exposure must be exactly one supported variant")
 
     grant_ids = tuple(grant.id for grant in profile.ordered_grants)
@@ -393,6 +398,8 @@ def _exposure_projection(
         )
     if isinstance(exposure, Native):
         return grant_ids, {"type": "Native"}
+    if isinstance(exposure, HttpApi):
+        return grant_ids, {"type": "HttpApi"}
     return grant_ids, {"type": "HostTable"}
 
 

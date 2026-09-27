@@ -31,6 +31,7 @@ PUBLIC_FACADE = {
     "FrozenCapabilityProfile",
     "FrozenToolPlan",
     "HostTable",
+    "HttpApi",
     "HandlerSuccess",
     "InvalidUpstreamResponse",
     "InvalidUrl",

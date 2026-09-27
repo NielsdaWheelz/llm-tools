@@ -18,6 +18,7 @@ from llm_tools import (
     EffectiveToolGrant,
     FrozenToolPlan,
     HostTable,
+    HttpApi,
     Native,
     NoDeclaredError,
     PlanCatalogView,
@@ -310,9 +311,14 @@ def test_equivalent_catalogs_and_all_exposure_shapes_remain_valid() -> None:
     equivalent_catalog = _catalog(equivalent)
     host_plan = ToolPlan(profile.id, HostTable()).freeze(equivalent_catalog, profile)
     native_plan = ToolPlan(profile.id, Native()).freeze(equivalent_catalog, profile)
+    http_plan = ToolPlan(profile.id, HttpApi()).freeze(equivalent_catalog, profile)
     assert host_plan.is_tightening_of(profile)
     assert native_plan.is_tightening_of(profile)
+    assert http_plan.is_tightening_of(profile)
+    assert len({host_plan.plan_revision, native_plan.plan_revision, http_plan.plan_revision}) == 3
     assert publish_host_table(host_plan)
+    with pytest.raises(ValueError, match="HostTable exposure"):
+        publish_host_table(http_plan)
 
     empty_catalog = ToolCatalog.compose(())
     empty_profile = CapabilityProfile(ProfileId("empty"), (), RUN_LIMITS).freeze(empty_catalog)
