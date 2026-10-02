@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import html
+import json
 import math
 import re
 from collections.abc import Iterable
@@ -70,6 +71,11 @@ class PromptJson:
 
     def __init__(self, value: JsonValue) -> None:
         object.__setattr__(self, "_canonical_text", canonical_json_bytes(value).decode("utf-8"))
+
+    @property
+    def value(self) -> JsonValue:
+        """Return an independent JSON copy for durable host context."""
+        return json.loads(self._canonical_text)
 
 
 @dataclass(frozen=True, slots=True)
