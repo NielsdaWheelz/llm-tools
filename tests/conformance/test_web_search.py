@@ -9,6 +9,7 @@ from datetime import datetime
 import httpx
 import pytest
 
+from llm_tools.budgets import RunBudgetState
 from llm_tools.catalog import ToolCatalog
 from llm_tools.execution import (
     ExecutionContext,
@@ -22,7 +23,6 @@ from llm_tools.execution import (
 from llm_tools.profiles import CapabilityProfile, Native, ProfileId, RunLimits, ToolGrant, ToolPlan
 from llm_tools.schema import canonical_json_bytes
 from llm_tools.testing import (
-    InMemoryBudgetState,
     InMemoryPositionRecorder,
     NeverCancelled,
     RecordingTelemetry,
@@ -110,7 +110,7 @@ def _context(binding, *, tool_limits=None, position: str = "turn-1/search-1"):
         position=InvocationPosition(position),
         recorder=recorder,
         effect_id=None,
-        budgets=InMemoryBudgetState(run_limits),
+        budgets=RunBudgetState(run_limits),
         principal=Principal("proof"),
         scope=Scope("public-web"),
         cancellation=NeverCancelled(),
@@ -361,7 +361,7 @@ async def test_operation_deadline_terminalizes_instead_of_requiring_owner_recove
     assert record.in_flight is False
     assert record.settlement is not None
     assert record.settlement.actual_attempts == 1
-    assert isinstance(context.budgets, InMemoryBudgetState)
+    assert isinstance(context.budgets, RunBudgetState)
     assert context.budgets.actual_external_attempts == 1
     assert context.budgets.reserved_external_attempts == 0
 
@@ -630,7 +630,7 @@ async def test_profile_tightened_attempt_limit_reaches_brave() -> None:
             position=InvocationPosition("turn-1/one-attempt"),
             recorder=InMemoryPositionRecorder(),
             effect_id=None,
-            budgets=InMemoryBudgetState(run_limits),
+            budgets=RunBudgetState(run_limits),
             principal=Principal("proof"),
             scope=Scope("public-web"),
             cancellation=NeverCancelled(),

@@ -1,5 +1,6 @@
 """Public ``llm_tools`` facade."""
 
+from .budgets import BudgetTotals, RunBudgetState, can_reserve
 from .catalog import ToolCatalog, ToolFamily
 from .declaration import (
     Available,
@@ -119,6 +120,7 @@ __all__ = [
     "BraveSearchProvider",
     "BoundaryFailure",
     "BudgetState",
+    "BudgetTotals",
     "Cancellation",
     "CapabilityProfile",
     "Discoverable",
@@ -162,6 +164,7 @@ __all__ = [
     "ReplayPolicy",
     "Reservation",
     "RunLimits",
+    "RunBudgetState",
     "Scope",
     "SchemaDecodeError",
     "Settlement",
@@ -203,6 +206,7 @@ __all__ = [
     "bind_brave_web_search",
     "bind_web_read",
     "canonical_json_bytes",
+    "can_reserve",
     "publish_host_table",
     "published_tool_ids",
     "raw_input_digest",

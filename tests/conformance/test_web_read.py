@@ -16,6 +16,7 @@ from typing import Any
 import pytest
 import trustme
 
+from llm_tools.budgets import RunBudgetState
 from llm_tools.catalog import ToolCatalog
 from llm_tools.declaration import ToolLimits
 from llm_tools.execution import (
@@ -29,7 +30,6 @@ from llm_tools.execution import (
 from llm_tools.profiles import CapabilityProfile, Native, ProfileId, RunLimits, ToolGrant, ToolPlan
 from llm_tools.schema import canonical_json_bytes
 from llm_tools.testing import (
-    InMemoryBudgetState,
     InMemoryPositionRecorder,
     NeverCancelled,
     RecordingTelemetry,
@@ -214,7 +214,7 @@ def _execution_context(
         position=InvocationPosition(position),
         recorder=InMemoryPositionRecorder(),
         effect_id=None,
-        budgets=InMemoryBudgetState(effective_run_limits),
+        budgets=RunBudgetState(effective_run_limits),
         principal=Principal("proof"),
         scope=Scope("public-web"),
         cancellation=NeverCancelled(),

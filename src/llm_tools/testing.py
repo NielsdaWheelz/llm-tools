@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import time
-from collections.abc import Callable
 from dataclasses import dataclass
 
 from llm_tools.declaration import ReplayPolicy, ToolId
@@ -15,129 +13,7 @@ from llm_tools.execution import (
     Settlement,
     ToolResult,
 )
-from llm_tools.profiles import RunLimits
 from llm_tools.schema import JsonObject
-
-
-@dataclass(slots=True)
-class _Spend:
-    reservation: Reservation
-    settlement: Settlement | None = None
-
-
-class InMemoryBudgetState:
-    def __init__(
-        self,
-        limits: RunLimits,
-        *,
-        monotonic: Callable[[], float] = time.monotonic,
-        started_at: float | None = None,
-    ) -> None:
-        self._limits = limits
-        self._spend: dict[InvocationPosition, _Spend] = {}
-        self._monotonic = monotonic
-        self._started_at = monotonic() if started_at is None else started_at
-
-    @property
-    def limits(self) -> RunLimits:
-        return self._limits
-
-    @property
-    def remaining_elapsed_seconds(self) -> float:
-        return self._limits.max_elapsed_seconds - (self._monotonic() - self._started_at)
-
-    @property
-    def actual_external_attempts(self) -> int:
-        return sum(
-            spend.settlement.actual_attempts
-            for spend in self._spend.values()
-            if spend.settlement is not None
-        )
-
-    @property
-    def actual_calls(self) -> int:
-        return sum(spend.reservation.calls for spend in self._spend.values())
-
-    @property
-    def actual_input_bytes(self) -> int:
-        return sum(spend.reservation.input_bytes for spend in self._spend.values())
-
-    @property
-    def actual_output_bytes(self) -> int:
-        return sum(
-            spend.settlement.actual_output_bytes
-            for spend in self._spend.values()
-            if spend.settlement is not None
-        )
-
-    @property
-    def reserved_external_attempts(self) -> int:
-        return sum(
-            spend.reservation.max_attempts
-            for spend in self._spend.values()
-            if spend.settlement is None
-        )
-
-    @property
-    def reserved_output_bytes(self) -> int:
-        return sum(
-            spend.reservation.max_output_bytes
-            for spend in self._spend.values()
-            if spend.settlement is None
-        )
-
-    async def reserve(self, position: InvocationPosition, reservation: Reservation) -> bool:
-        existing = self._spend.get(position)
-        if existing is not None:
-            if existing.reservation != reservation:
-                raise ValueError("position budget reservation differs from durable spend")
-            return True
-        calls = sum(spend.reservation.calls for spend in self._spend.values())
-        input_bytes = sum(spend.reservation.input_bytes for spend in self._spend.values())
-        attempts = sum(
-            spend.settlement.actual_attempts
-            if spend.settlement is not None
-            else spend.reservation.max_attempts
-            for spend in self._spend.values()
-        )
-        output_bytes = sum(
-            spend.settlement.actual_output_bytes
-            if spend.settlement is not None
-            else spend.reservation.max_output_bytes
-            for spend in self._spend.values()
-        )
-        if (
-            calls + reservation.calls > self._limits.max_calls
-            or input_bytes + reservation.input_bytes > self._limits.max_input_bytes
-            or attempts + reservation.max_attempts > self._limits.max_external_attempts
-            or output_bytes + reservation.max_output_bytes > self._limits.max_output_bytes
-            or sum(spend.settlement is None for spend in self._spend.values())
-            >= self._limits.max_in_flight
-        ):
-            return False
-        self._spend[position] = _Spend(reservation=reservation)
-        return True
-
-    async def settle(self, position: InvocationPosition, settlement: Settlement) -> None:
-        spend = self._spend.get(position)
-        if spend is None:
-            raise ValueError("position has no durable budget charge")
-        if spend.settlement is not None:
-            if spend.settlement != settlement:
-                raise ValueError("position budget was settled differently")
-            return
-        if isinstance(settlement.actual_attempts, bool) or isinstance(
-            settlement.actual_output_bytes, bool
-        ):
-            raise TypeError("settlement accounting must use integers")
-        if settlement.actual_attempts < 0 or settlement.actual_output_bytes < 0:
-            raise ValueError("settlement accounting must not be negative")
-        if (
-            settlement.actual_attempts > spend.reservation.max_attempts
-            or settlement.actual_output_bytes > spend.reservation.max_output_bytes
-        ):
-            raise ValueError("settlement exceeds reservation")
-        spend.settlement = settlement
 
 
 @dataclass(slots=True)

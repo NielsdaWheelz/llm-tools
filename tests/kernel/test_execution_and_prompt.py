@@ -10,6 +10,7 @@ from typing import Annotated, Literal
 import pytest
 from pydantic import BaseModel, ConfigDict, Field
 
+from llm_tools.budgets import RunBudgetState
 from llm_tools.catalog import ToolCatalog, ToolFamily
 from llm_tools.declaration import (
     Available,
@@ -61,7 +62,6 @@ from llm_tools.prompt_sections import (
     render_prompt,
 )
 from llm_tools.testing import (
-    InMemoryBudgetState,
     InMemoryPositionRecorder,
     NeverCancelled,
     RecordingTelemetry,
@@ -143,10 +143,10 @@ def _context(
     *,
     recorder: InMemoryPositionRecorder,
     position: str,
-    budgets: InMemoryBudgetState | None = None,
+    budgets: RunBudgetState | None = None,
     effect_id: EffectId | None = None,
 ) -> ExecutionContext:
-    effective_budgets = budgets or InMemoryBudgetState(RUN_LIMITS)
+    effective_budgets = budgets or RunBudgetState(RUN_LIMITS)
     plan = _plan(binding, run_limits=effective_budgets.limits)
     return ExecutionContext(
         plan=plan,
@@ -261,7 +261,7 @@ async def test_budget_and_unavailable_fail_before_dispatch_without_uncertainty()
         binding,
         recorder=recorder,
         position="turn-2/budget",
-        budgets=InMemoryBudgetState(tiny_limits),
+        budgets=RunBudgetState(tiny_limits),
     )
 
     assert await ToolExecutor.execute(binding, ParsedJson({"query": "hello"}), context) == {
@@ -273,7 +273,7 @@ async def test_budget_and_unavailable_fail_before_dispatch_without_uncertainty()
     assert calls == 0
 
     budgets = context.budgets
-    assert isinstance(budgets, InMemoryBudgetState)
+    assert isinstance(budgets, RunBudgetState)
     assert budgets.actual_calls == 0
     assert budgets.actual_input_bytes == 0
     assert budgets.actual_external_attempts == 0
@@ -393,7 +393,7 @@ async def test_redispatchable_write_timeout_requires_reconciliation_before_redis
         effect=ToolEffect.Write,
     )
     recorder = InMemoryPositionRecorder()
-    budgets = InMemoryBudgetState(RUN_LIMITS)
+    budgets = RunBudgetState(RUN_LIMITS)
     context = _context(
         binding,
         recorder=recorder,
@@ -540,7 +540,7 @@ async def test_recovered_attempts_remain_charged_when_redispatch_stops_before_di
         raise RuntimeError(f"abandoned after one attempt: {value!r} {context!r}")
 
     clock = [0.0]
-    budgets = InMemoryBudgetState(RUN_LIMITS, monotonic=lambda: clock[0], started_at=0.0)
+    budgets = RunBudgetState(RUN_LIMITS, monotonic=lambda: clock[0], started_at=0.0)
     binding = _binding(abandoned, replay_policy=ReplayPolicy.ReDispatchable)
     recorder = InMemoryPositionRecorder()
     context = _context(
@@ -565,6 +565,7 @@ async def test_recovered_attempts_remain_charged_when_redispatch_stops_before_di
         assert isinstance(cancellation, NeverCancelled)
         cancellation.cancel()
     elif stopped_by == "elapsed":
+        assert RUN_LIMITS.max_elapsed_seconds is not None
         clock[0] = RUN_LIMITS.max_elapsed_seconds + 1
     else:
         unavailable = ToolBinding(
@@ -653,7 +654,7 @@ async def test_terminal_result_and_budget_settlement_commit_once_and_preserve_te
 
     binding = _binding(handler)
     recorder = InMemoryPositionRecorder()
-    budgets = InMemoryBudgetState(RUN_LIMITS)
+    budgets = RunBudgetState(RUN_LIMITS)
     context = _context(
         binding,
         recorder=recorder,
@@ -752,7 +753,7 @@ async def test_atomic_dispatch_claim_prevents_duplicate_concurrent_effects(
 
     binding = _binding(handler, replay_policy=replay_policy)
     recorder = PausingClaimRecorder()
-    budgets = InMemoryBudgetState(RUN_LIMITS)
+    budgets = RunBudgetState(RUN_LIMITS)
     first_context = _context(
         binding,
         recorder=recorder,
@@ -873,12 +874,13 @@ async def test_execution_requires_the_plan_owned_view_and_exact_frozen_binding()
             ParsedJson({"query": "hello"}),
             replace(context, catalog_view=forged_view),
         )
+    assert RUN_LIMITS.max_calls is not None
     mismatched_limits = replace(RUN_LIMITS, max_calls=RUN_LIMITS.max_calls + 1)
     with pytest.raises(ExecutorConfigurationDefect, match="budget limits"):
         await ToolExecutor.execute(
             binding,
             ParsedJson({"query": "hello"}),
-            replace(context, budgets=InMemoryBudgetState(mismatched_limits)),
+            replace(context, budgets=RunBudgetState(mismatched_limits)),
         )
     assert calls == 0
 
@@ -940,7 +942,7 @@ async def test_reservation_conflicts_defect_instead_of_becoming_budget_failures(
         input_digest=raw_input_digest(ParsedJson({"query": "hello"})),
         replay_policy=binding.replay_policy,
     )
-    budgets = InMemoryBudgetState(RUN_LIMITS)
+    budgets = RunBudgetState(RUN_LIMITS)
     first = Reservation(calls=1, input_bytes=10, max_attempts=2, max_output_bytes=100)
     assert await direct.reserve(position=position, budgets=budgets, reservation=first) is True
     with pytest.raises(ValueError, match="reservation"):
@@ -993,7 +995,7 @@ async def test_per_call_input_and_elapsed_limits_fail_before_dispatch() -> None:
     }
     assert recorder.record(context.position).dispatches == 0
 
-    elapsed_budgets = InMemoryBudgetState(RUN_LIMITS, monotonic=lambda: 31.0, started_at=0.0)
+    elapsed_budgets = RunBudgetState(RUN_LIMITS, monotonic=lambda: 31.0, started_at=0.0)
     elapsed_binding = _binding(handler)
     elapsed_context = _context(
         elapsed_binding,

@@ -70,11 +70,25 @@ class Reservation:
     max_attempts: int
     max_output_bytes: int
 
+    def __post_init__(self) -> None:
+        values = (self.calls, self.input_bytes, self.max_attempts, self.max_output_bytes)
+        if any(isinstance(value, bool) or not isinstance(value, int) for value in values):
+            raise TypeError("reservation accounting must use integers")
+        if any(value < 0 for value in values):
+            raise ValueError("reservation accounting must not be negative")
+
 
 @dataclass(frozen=True, slots=True)
 class Settlement:
     actual_attempts: int
     actual_output_bytes: int
+
+    def __post_init__(self) -> None:
+        values = (self.actual_attempts, self.actual_output_bytes)
+        if any(isinstance(value, bool) or not isinstance(value, int) for value in values):
+            raise TypeError("settlement accounting must use integers")
+        if any(value < 0 for value in values):
+            raise ValueError("settlement accounting must not be negative")
 
 
 @dataclass(frozen=True, slots=True)
@@ -91,7 +105,7 @@ class BudgetState(Protocol):
     def limits(self) -> RunLimits: ...
 
     @property
-    def remaining_elapsed_seconds(self) -> float: ...
+    def remaining_elapsed_seconds(self) -> float | None: ...
 
     async def reserve(self, position: InvocationPosition, reservation: Reservation) -> bool: ...
 
@@ -305,9 +319,11 @@ class ToolExecutor:
                 actual_attempts=position.actual_attempts,
             )
         remaining_elapsed = context.budgets.remaining_elapsed_seconds
-        if not math.isfinite(remaining_elapsed):
+        if remaining_elapsed is not None and not math.isfinite(remaining_elapsed):
             raise ExecutorConfigurationDefect("run budget returned a non-finite deadline")
-        if context.cancellation.cancelled or remaining_elapsed <= 0:
+        if context.cancellation.cancelled or (
+            remaining_elapsed is not None and remaining_elapsed <= 0
+        ):
             return await _terminalize_boundary(
                 "DeadlineExceeded",
                 context,
@@ -351,7 +367,10 @@ class ToolExecutor:
             ),
         )
         try:
-            async with asyncio.timeout(min(limits.deadline_seconds, remaining_elapsed)):
+            deadline = limits.deadline_seconds
+            if remaining_elapsed is not None:
+                deadline = min(deadline, remaining_elapsed)
+            async with asyncio.timeout(deadline):
                 outcome = await binding.execute.handler(decoded, dispatch_context)
         except BoundaryFailure as failure:
             try:

@@ -10,6 +10,7 @@ from typing import Annotated, Literal
 import pytest
 from pydantic import BaseModel, ConfigDict, Field
 
+from llm_tools.budgets import RunBudgetState
 from llm_tools.catalog import ToolCatalog, ToolFamily
 from llm_tools.declaration import (
     TOOL_ID_PATTERN,
@@ -53,7 +54,6 @@ from llm_tools.profiles import (
     ToolPlan,
 )
 from llm_tools.testing import (
-    InMemoryBudgetState,
     InMemoryPositionRecorder,
     NeverCancelled,
     RecordingTelemetry,
@@ -213,7 +213,7 @@ def _context(
     *,
     position: str,
     recorder: InMemoryPositionRecorder | None = None,
-    budgets: InMemoryBudgetState | None = None,
+    budgets: RunBudgetState | None = None,
 ) -> ExecutionContext:
     return ExecutionContext(
         plan=fixture.plan,
@@ -222,7 +222,7 @@ def _context(
         position=InvocationPosition(position),
         recorder=recorder or InMemoryPositionRecorder(),
         effect_id=None,
-        budgets=budgets or InMemoryBudgetState(RUN_LIMITS),
+        budgets=budgets or RunBudgetState(RUN_LIMITS),
         principal=Principal("principal-1"),
         scope=Scope("scope-1"),
         cancellation=NeverCancelled(),
@@ -488,7 +488,7 @@ class ReferenceHost:
     fixture: Fixture
     revealed_targets: set[ToolId] = field(default_factory=set)
     recorder: InMemoryPositionRecorder = field(default_factory=InMemoryPositionRecorder)
-    budgets: InMemoryBudgetState = field(default_factory=lambda: InMemoryBudgetState(RUN_LIMITS))
+    budgets: RunBudgetState = field(default_factory=lambda: RunBudgetState(RUN_LIMITS))
     call_index: int = 0
 
     @property

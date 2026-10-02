@@ -30,6 +30,7 @@ from llm_tools import (
     ParsedJson,
     Principal,
     ProfileId,
+    RunBudgetState,
     RunLimits,
     Scope,
     ToolCatalog,
@@ -41,7 +42,6 @@ from llm_tools import (
     web_family,
 )
 from llm_tools.testing import (
-    InMemoryBudgetState,
     InMemoryPositionRecorder,
     NeverCancelled,
     RecordingTelemetry,
@@ -69,7 +69,7 @@ async def search_once(api_key: str) -> None:
         ).freeze(catalog)
         plan = ToolPlan(profile=profile.id, exposure=Native()).freeze(catalog, profile)
 
-        budgets = InMemoryBudgetState(profile.run_limits)
+        budgets = RunBudgetState(profile.run_limits)
         result = await ToolExecutor.execute(
             plan.catalog_view.binding(WEB_SEARCH_SPEC.id),
             ParsedJson({"query": "Brave Search API docs", "freshness_days": None}),
@@ -90,12 +90,25 @@ async def search_once(api_key: str) -> None:
         print(result)
 ```
 
-`llm_tools.testing` contains process-local conformance doubles only. They are not durable replay,
-budget, recovery, or production storage implementations. A production host supplies those owners.
+`RunBudgetState` supplies process-local accounting for one event-loop owner. `llm_tools.testing`
+contains conformance doubles only; it does not supply durable replay or recovery. A production host
+owns its recorder and atomic result/budget commit.
 Hosts persist `raw_input_digest(...)` as invocation identity; a binding may raise
 `BoundaryFailure` only for the four executor-owned boundary outcomes.
 
 ## Host integration
+
+`RunLimits` permits `None` for cumulative calls, external attempts, input/output bytes and elapsed
+time. `None` means no ceiling and is encoded as canonical JSON null in frozen revisions. A finite
+ceiling tightens an absent one; an absent ceiling cannot tighten a finite one. `max_in_flight` and
+every per-tool limit remain finite. The executor uses the tool deadline alone when run elapsed is
+absent.
+
+`BudgetTotals` includes accepted calls/input and settled actual plus unsettled reserved maxima for
+attempts/output. `can_reserve(limits, totals, reservation)` is the shared pure admission predicate;
+the host handles existing positions first under its recorder lock or transaction. `RunBudgetState`
+uses the same predicate with running totals and idempotent position settlement. It supplies no
+durability claim; database-backed hosts persist result and settlement atomically.
 
 `validate_tool_input(binding, arguments)` is the public pure validation boundary. It returns the
 binding's declared input type or raises `SchemaDecodeError`; it has no execution context and cannot
