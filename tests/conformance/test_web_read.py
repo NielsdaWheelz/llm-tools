@@ -259,8 +259,8 @@ def test_web_read_binding_revision_records_entity_extraction_behavior() -> None:
     available = bind_web_read(SafeWebReader(resolver=StaticResolver({})))
     unavailable = web_family().bindings[1]
 
-    assert available.implementation_revision == "llm-tools-web-read-v2"
-    assert unavailable.implementation_revision == "llm-tools-web-read-v2"
+    assert available.implementation_revision == "llm-tools-web-read-v3"
+    assert unavailable.implementation_revision == "llm-tools-web-read-v3"
     assert available.policy_revision == unavailable.policy_revision
 
 

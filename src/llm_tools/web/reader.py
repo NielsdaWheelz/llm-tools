@@ -497,6 +497,14 @@ def _parse_head(raw: bytes) -> _ResponseHead:
         if not separator or not _TOKEN.fullmatch(name):
             raise WebReadFailure(InvalidUpstreamResponse(), attempts=1)
         key = name.decode("ascii").lower()
+        if key not in {
+            "content-length",
+            "transfer-encoding",
+            "content-type",
+            "content-encoding",
+            "location",
+        }:
+            continue
         if key in headers:
             raise WebReadFailure(InvalidUpstreamResponse(), attempts=1)
         try:

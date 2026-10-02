@@ -454,17 +454,17 @@ that information-flow policy explicitly.
 
 | Identity | Current value | Migration meaning |
 |---|---|---|
-| Binding implementation | `llm-tools-web-read-v2` | Replaces v1's accidental second entity decode; exact-revision consumers must update and re-freeze. |
+| Binding implementation | `llm-tools-web-read-v3` | Preserves v2 extraction and permits repeated unused metadata; consumed framing, content, and redirect fields remain strict. |
 | Binding policy epoch | `web-read-v1` | Unchanged: direct mode, accepted media, and owner-controlled policy inputs did not change. |
 | Plain-text extraction locator | `plain-text-v2` | Charset decode plus whitespace collapse; no HTML or entity interpretation. |
 | HTML/XHTML extraction locator | `html-visible-text-v2` | One parser-owned standards decode, visible-text sanitization, then whitespace collapse. |
 | JSON extraction locator | `json-canonical-v1` | Unchanged canonical JSON behavior. |
 
 The portable `WEB_READ_SPEC` contract and limits remain unchanged. Because frozen grants commit to
-the binding implementation revision, a kernel or host pinned to v1 must pin the new library commit,
-change its expected revision to `llm-tools-web-read-v2`, reconstruct the catalogue, freeze a new
-capability profile and plan, and deploy those new identities together. Reusing a v1 frozen profile
-or plan with the v2 binding must continue to fail closed as a revision mismatch.
+the binding implementation revision, a kernel or host pinned to an older revision must pin the new
+library commit, change its expected revision to `llm-tools-web-read-v3`, reconstruct the catalogue,
+freeze a new capability profile and plan, and deploy those new identities together. Reusing an older
+frozen profile or plan with the v3 binding must continue to fail closed as a revision mismatch.
 
 ## 8. Budgets, replay hooks, and prompts
 

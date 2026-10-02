@@ -169,7 +169,9 @@ replacing cancellation violates the provider contract. Unexpected provider `Time
 external task cancellation are not normalized by the binding and retain the executor's recovery
 semantics.
 
-`bind_web_read(reader)` carries implementation revision `llm-tools-web-read-v2`. Plain-text
+`bind_web_read(reader)` carries implementation revision `llm-tools-web-read-v3`. The reader ignores
+headers it does not consume, including repeated metadata. It rejects repeated framing, content-type,
+content-encoding, or redirect fields rather than choosing an ambiguous value. Plain-text
 extraction decodes only the declared character set and collapses whitespace: entity-looking text
 and markup remain literal data. HTML/XHTML extraction delegates its sole entity-decoding pass to
 `HTMLParser(convert_charrefs=True)`, then collapses whitespace without re-decoding parser output.
