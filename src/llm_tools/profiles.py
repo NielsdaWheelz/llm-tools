@@ -29,39 +29,46 @@ class ProfileId(str):
 
 @dataclass(frozen=True, slots=True)
 class RunLimits:
-    max_calls: int
-    max_external_attempts: int
-    max_input_bytes: int
-    max_output_bytes: int
+    max_calls: int | None
+    max_external_attempts: int | None
+    max_input_bytes: int | None
+    max_output_bytes: int | None
     max_in_flight: int
-    max_elapsed_seconds: float
+    max_elapsed_seconds: float | None
 
     def __post_init__(self) -> None:
-        integer_limits = (
+        cumulative_integer_limits = (
             self.max_calls,
             self.max_external_attempts,
             self.max_input_bytes,
             self.max_output_bytes,
-            self.max_in_flight,
         )
-        if any(isinstance(value, bool) or not isinstance(value, int) for value in integer_limits):
-            raise TypeError("run count and byte limits must be integers")
-        if isinstance(self.max_elapsed_seconds, bool) or not isinstance(
-            self.max_elapsed_seconds, (int, float)
+        integer_limits = tuple(value for value in cumulative_integer_limits if value is not None)
+        if any(
+            isinstance(value, bool) or not isinstance(value, int)
+            for value in (*integer_limits, self.max_in_flight)
         ):
-            raise TypeError("run elapsed limit must be numeric")
-        if not math.isfinite(self.max_elapsed_seconds):
-            raise ValueError("run elapsed limit must be finite")
+            raise TypeError("run count and byte limits must be integers")
+        if self.max_elapsed_seconds is not None:
+            if isinstance(self.max_elapsed_seconds, bool) or not isinstance(
+                self.max_elapsed_seconds, (int, float)
+            ):
+                raise TypeError("run elapsed limit must be numeric")
+            if not math.isfinite(self.max_elapsed_seconds):
+                raise ValueError("run elapsed limit must be finite")
         if (
-            self.max_calls <= 0
-            or self.max_external_attempts < 0
-            or self.max_input_bytes <= 0
-            or self.max_output_bytes <= 0
+            (self.max_calls is not None and self.max_calls <= 0)
+            or (self.max_external_attempts is not None and self.max_external_attempts < 0)
+            or (self.max_input_bytes is not None and self.max_input_bytes <= 0)
+            or (self.max_output_bytes is not None and self.max_output_bytes <= 0)
             or self.max_in_flight <= 0
-            or self.max_elapsed_seconds <= 0
+            or (self.max_elapsed_seconds is not None and self.max_elapsed_seconds <= 0)
         ):
             raise ValueError("run limits must be positive; attempts may be zero")
-        if self.max_output_bytes < _BOUNDARY_FAILURE_MAX_BYTES:
+        if (
+            self.max_output_bytes is not None
+            and self.max_output_bytes < _BOUNDARY_FAILURE_MAX_BYTES
+        ):
             raise ValueError("run limits cannot encode the largest boundary failure envelope")
 
     def json(self) -> JsonObject:
@@ -186,13 +193,18 @@ class FrozenCapabilityProfile:
         except (AttributeError, KeyError, TypeError, ValueError):
             return False
 
-        if not (
-            self.run_limits.max_calls <= maximum.run_limits.max_calls
-            and self.run_limits.max_external_attempts <= maximum.run_limits.max_external_attempts
-            and self.run_limits.max_input_bytes <= maximum.run_limits.max_input_bytes
-            and self.run_limits.max_output_bytes <= maximum.run_limits.max_output_bytes
-            and self.run_limits.max_in_flight <= maximum.run_limits.max_in_flight
-            and self.run_limits.max_elapsed_seconds <= maximum.run_limits.max_elapsed_seconds
+        if self.run_limits.max_in_flight > maximum.run_limits.max_in_flight:
+            return False
+        cumulative_limits = (
+            (self.run_limits.max_calls, maximum.run_limits.max_calls),
+            (self.run_limits.max_external_attempts, maximum.run_limits.max_external_attempts),
+            (self.run_limits.max_input_bytes, maximum.run_limits.max_input_bytes),
+            (self.run_limits.max_output_bytes, maximum.run_limits.max_output_bytes),
+            (self.run_limits.max_elapsed_seconds, maximum.run_limits.max_elapsed_seconds),
+        )
+        if any(
+            ceiling is not None and (value is None or value > ceiling)
+            for value, ceiling in cumulative_limits
         ):
             return False
         for grant in self.ordered_grants:

@@ -16,6 +16,7 @@ PUBLIC_FACADE = {
     "BraveSearchProvider",
     "BoundaryFailure",
     "BudgetState",
+    "BudgetTotals",
     "Cancellation",
     "CapabilityProfile",
     "DirectConnector",
@@ -59,6 +60,7 @@ PUBLIC_FACADE = {
     "ReplayPolicy",
     "Reservation",
     "RunLimits",
+    "RunBudgetState",
     "SafeWebReader",
     "Scope",
     "SchemaDecodeError",
@@ -105,6 +107,7 @@ PUBLIC_FACADE = {
     "bind_brave_web_search",
     "bind_web_read",
     "canonical_json_bytes",
+    "can_reserve",
     "publish_host_table",
     "published_tool_ids",
     "raw_input_digest",
@@ -140,7 +143,6 @@ def test_public_execution_boundary_and_input_digest_are_stable() -> None:
 async def test_public_facade_is_sufficient_to_author_and_execute_a_binding() -> None:
     import llm_tools
     from llm_tools.testing import (
-        InMemoryBudgetState,
         InMemoryPositionRecorder,
         NeverCancelled,
         RecordingTelemetry,
@@ -195,7 +197,7 @@ async def test_public_facade_is_sufficient_to_author_and_execute_a_binding() -> 
         position=llm_tools.InvocationPosition("turn-1/call-1"),
         recorder=InMemoryPositionRecorder(),
         effect_id=None,
-        budgets=InMemoryBudgetState(run_limits),
+        budgets=llm_tools.RunBudgetState(run_limits),
         principal=llm_tools.Principal("test"),
         scope=llm_tools.Scope("test"),
         cancellation=NeverCancelled(),

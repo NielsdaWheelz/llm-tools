@@ -26,7 +26,7 @@ async def test_owned_https_redirect_fixture_peer_bounds_and_receipt() -> None:
     binding = bind_web_read(reader)
     response = await reader.read(fixture_url)
 
-    assert binding.implementation_revision == "llm-tools-web-read-v2"
+    assert binding.implementation_revision == "llm-tools-web-read-v3"
     assert fixture_url.startswith("https://")
     assert response.value.final_url.startswith("https://")
     assert len(response.hops) >= 2

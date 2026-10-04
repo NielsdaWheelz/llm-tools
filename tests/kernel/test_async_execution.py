@@ -8,6 +8,7 @@ from typing import Annotated
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from llm_tools.budgets import RunBudgetState
 from llm_tools.catalog import ToolCatalog, ToolFamily
 from llm_tools.declaration import (
     Available,
@@ -43,7 +44,6 @@ from llm_tools.profiles import (
     ToolPlan,
 )
 from llm_tools.testing import (
-    InMemoryBudgetState,
     InMemoryPositionRecorder,
     NeverCancelled,
     RecordingTelemetry,
@@ -92,7 +92,7 @@ def test_recorder_and_budget_mutation_contracts_are_async_only() -> None:
 async def test_executor_awaits_recorder_budget_and_handler_boundaries() -> None:
     trace: list[str] = []
 
-    class YieldingBudgetState(InMemoryBudgetState):
+    class YieldingBudgetState(RunBudgetState):
         async def reserve(
             self,
             position: InvocationPosition,

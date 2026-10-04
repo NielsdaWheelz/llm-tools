@@ -56,7 +56,7 @@ from llm_tools.web.reader import SafeWebReader
 _WEB_SEARCH_OPERATION_DEADLINE_SECONDS = 12.0
 _WEB_SEARCH_IMPLEMENTATION_REVISION = "llm-tools-web-search-v2"
 _WEB_SEARCH_POLICY_EPOCH = PolicyEpoch("web-search-v2")
-_WEB_READ_IMPLEMENTATION_REVISION = "llm-tools-web-read-v2"
+_WEB_READ_IMPLEMENTATION_REVISION = "llm-tools-web-read-v3"
 _WEB_READ_POLICY_EPOCH = PolicyEpoch("web-read-v1")
 
 WEB_SEARCH_SPEC = ToolSpec[WebSearchInput, WebSearchSuccess, WebSearchToolError](
