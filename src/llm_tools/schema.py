@@ -262,9 +262,14 @@ def _validate_union(branches: list[JsonValue], *, keyword: str) -> None:
 
     branch_types = [branch.get("type") for branch in branch_objects]
     if len(branches) == 2 and "null" in branch_types:
-        other = branch_types[0] if branch_types[1] == "null" else branch_types[1]
-        if other in {"string", "integer", "number", "boolean", "object", "array"}:
+        other = branch_objects[0] if branch_types[1] == "null" else branch_objects[1]
+        if other.get("type") in {"string", "integer", "number", "boolean", "object", "array"}:
             return
+        for nested_keyword in ("anyOf", "oneOf"):
+            nested = other.get(nested_keyword)
+            if isinstance(nested, list):
+                _validate_union(nested, keyword=nested_keyword)
+                return
 
     properties_by_branch: list[dict[str, JsonValue]] = []
     discriminators: set[str] | None = None

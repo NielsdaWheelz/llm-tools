@@ -492,6 +492,30 @@ def test_duplicate_literal_tags_and_open_maps_remain_unsupported() -> None:
         compile_schema(OpenMap)
 
 
+def test_nullable_literal_union_keeps_each_branch_closed() -> None:
+    class Leaf(BaseModel):
+        model_config = ConfigDict(extra="forbid")
+        kind: Literal["leaf"]
+        text: str
+
+    class Branch(BaseModel):
+        model_config = ConfigDict(extra="forbid")
+        kind: Literal["branch"]
+        count: int
+
+    class Result(BaseModel):
+        model_config = ConfigDict(extra="forbid")
+        value: Annotated[Leaf | Branch, Field(discriminator="kind")] | None
+
+    schema = compile_schema(Result)
+    for value in (None, {"kind": "leaf", "text": "one"}, {"kind": "branch", "count": 2}):
+        wire = {"value": value}
+        assert strict_encode(Result, schema, strict_decode(Result, schema, wire)) == wire
+    for value in ({"kind": "unknown"}, {"kind": "leaf", "text": "one", "count": 2}):
+        with pytest.raises(SchemaDecodeError):
+            strict_decode(Result, schema, {"value": value})
+
+
 def test_nullable_object_and_array_unions_round_trip_strictly() -> None:
     class NestedValue(BaseModel):
         model_config = ConfigDict(extra="forbid")
