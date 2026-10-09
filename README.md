@@ -37,12 +37,12 @@ from llm_tools import (
     ToolExecutor,
     ToolGrant,
     ToolPlan,
+    TransientPositionRecorder,
     WEB_SEARCH_SPEC,
     bind_brave_web_search,
     web_family,
 )
 from llm_tools.testing import (
-    InMemoryPositionRecorder,
     NeverCancelled,
     RecordingTelemetry,
 )
@@ -78,7 +78,7 @@ async def search_once(api_key: str) -> None:
                 grant=plan.grant(WEB_SEARCH_SPEC.id),
                 catalog_view=plan.catalog_view,
                 position=InvocationPosition("demo/turn-1/tool-1"),
-                recorder=InMemoryPositionRecorder(durable=False),
+                recorder=TransientPositionRecorder(),
                 effect_id=None,
                 budgets=budgets,
                 principal=Principal("demo-user"),
@@ -90,9 +90,12 @@ async def search_once(api_key: str) -> None:
         print(result)
 ```
 
-`RunBudgetState` supplies process-local accounting for one event-loop owner. `llm_tools.testing`
-contains conformance doubles only; it does not supply durable replay or recovery. A production host
-owns its recorder and atomic result/budget commit.
+`RunBudgetState` supplies process-local accounting for one event-loop owner.
+`TransientPositionRecorder` supplies one isolated run's receipts for `Pure` and `Read` tools. It is
+always nondurable: the executor refuses `Write` dispatch. Create a fresh recorder and budget for
+each run; discard both on interruption. Terminal results replay within that run, and an uncertain
+read blocks reuse in that run. A new run may repeat the computation. Durable hosts own persistence
+and atomic result/budget commits; `llm_tools.testing` contains conformance doubles only.
 Hosts persist `raw_input_digest(...)` as invocation identity; a binding may raise
 `BoundaryFailure` only for the four executor-owned boundary outcomes.
 

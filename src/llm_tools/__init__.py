@@ -79,6 +79,7 @@ from .prompt_sections import (
     PromptText,
     render_prompt,
 )
+from .recorders import TransientPositionRecorder
 from .schema import SchemaDecodeError, canonical_json_bytes
 from .validation import validate_tool_input
 from .web.brave import BraveSearchProvider
@@ -188,6 +189,7 @@ __all__ = [
     "ToolSpec",
     "ToolResult",
     "TooLarge",
+    "TransientPositionRecorder",
     "Unavailable",
     "UnsafeDestination",
     "UnsupportedContent",

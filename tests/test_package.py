@@ -87,6 +87,7 @@ PUBLIC_FACADE = {
     "ToolSearchSuccess",
     "ToolSpec",
     "ToolResult",
+    "TransientPositionRecorder",
     "Unavailable",
     "UnsafeDestination",
     "UnsupportedContent",

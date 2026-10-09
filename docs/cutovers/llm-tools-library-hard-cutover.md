@@ -482,9 +482,13 @@ Every dispatched attempt counts; a retry is not free.
 
 The library defines `InvocationPosition` and the canonical input digest. The
 host supplies principal/scope, budget state, cancellation, telemetry, and a
-position recorder through `ExecutionContext`. The library stores no replay
-state. A durable host must memoize terminal results by position and reject a
-different tool or input digest at an occupied position.
+position recorder through `ExecutionContext`. `TransientPositionRecorder` keeps only
+one run's in-memory receipts for `Pure` and `Read` tools; `durable` is fixed to
+`False`, so the executor refuses `Write` dispatch. Hosts create a fresh instance
+and budget per isolated run and discard them on interruption. Completion replays
+within that run; uncertain work blocks reuse there. A later run may repeat it.
+The library stores no durable replay state. A durable host must memoize terminal
+results by position and reject a different tool or input digest at an occupied position.
 
 `ToolBinding.replay_policy` is mandatory. `BilledOnce` forbids automatic
 redispatch after dispatch begins: an uncertain outcome suspends for explicit
