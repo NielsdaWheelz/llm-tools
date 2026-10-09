@@ -438,6 +438,60 @@ def test_schema_rejects_ambiguous_untagged_unions() -> None:
         )
 
 
+def test_literal_kind_discriminator_round_trips_and_remains_closed() -> None:
+    class RecordReference(BaseModel):
+        model_config = ConfigDict(extra="forbid")
+        kind: Literal["record"]
+        id: str
+
+    class RangeReference(BaseModel):
+        model_config = ConfigDict(extra="forbid")
+        kind: Literal["range"]
+        start: int
+        count: int
+
+    class References(BaseModel):
+        model_config = ConfigDict(extra="forbid")
+        values: tuple[Annotated[RecordReference | RangeReference, Field(discriminator="kind")], ...]
+
+    schema = compile_schema(References)
+    value = {"values": [{"kind": "record", "id": "one"}, {"kind": "range", "start": 0, "count": 2}]}
+    decoded = strict_decode(References, schema, value)
+    assert strict_encode(References, schema, decoded) == value
+    for invalid in (
+        {"values": [{"kind": "unknown", "id": "one"}]},
+        {"values": [{"kind": "record", "id": "one", "start": 0}]},
+        {"values": [{"kind": "range", "start": 0}]},
+    ):
+        with pytest.raises(SchemaDecodeError):
+            strict_decode(References, schema, invalid)
+
+
+def test_duplicate_literal_tags_and_open_maps_remain_unsupported() -> None:
+    class First(BaseModel):
+        model_config = ConfigDict(extra="forbid")
+        kind: Literal["same"]
+        first: str
+
+    class Second(BaseModel):
+        model_config = ConfigDict(extra="forbid")
+        kind: Literal["same"]
+        second: str
+
+    class Ambiguous(BaseModel):
+        model_config = ConfigDict(extra="forbid")
+        value: First | Second
+
+    class OpenMap(BaseModel):
+        model_config = ConfigDict(extra="forbid")
+        value: dict[str, str]
+
+    with pytest.raises(UnsupportedSchema):
+        compile_schema(Ambiguous)
+    with pytest.raises(UnsupportedSchema, match="open or map-like"):
+        compile_schema(OpenMap)
+
+
 def test_nullable_object_and_array_unions_round_trip_strictly() -> None:
     class NestedValue(BaseModel):
         model_config = ConfigDict(extra="forbid")

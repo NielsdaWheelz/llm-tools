@@ -293,7 +293,8 @@ Both projections recursively:
 - closes every object with `additionalProperties: false`;
 - marks every property required, representing intentional nullable public
   fields with JSON `null` rather than importing any application's absence type;
-- inlines or rejects references, normalizes tagged unions on `type`, and rejects
+- inlines or rejects references, normalizes closed tagged unions on a common
+  unique literal discriminator such as `type` or `kind`, and rejects
   unsupported keywords or ambiguous unions;
 - canonicalize object keys and set-like arrays whose order has no validation
   meaning, including `required`, `enum`, and normalized union branches; and

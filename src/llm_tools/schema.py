@@ -266,19 +266,29 @@ def _validate_union(branches: list[JsonValue], *, keyword: str) -> None:
         if other in {"string", "integer", "number", "boolean", "object", "array"}:
             return
 
-    tags: list[JsonValue] = []
+    properties_by_branch: list[dict[str, JsonValue]] = []
+    discriminators: set[str] | None = None
     for branch in branch_objects:
         if branch.get("type") != "object":
             raise UnsupportedSchema("ambiguous untagged union is outside the portable subset")
         properties = branch.get("properties")
         if not isinstance(properties, dict):
             raise UnsupportedSchema("tagged union branch must be an object")
-        tag_schema = properties.get("type")
-        if not isinstance(tag_schema, dict) or "const" not in tag_schema:
-            raise UnsupportedSchema("tagged object union must discriminate on type")
-        tags.append(tag_schema["const"])
-    if len({canonical_json_bytes(tag) for tag in tags}) != len(tags):
-        raise UnsupportedSchema("tagged object union type values must be unique")
+        properties_by_branch.append(properties)
+        literal_names = {
+            name
+            for name, child in properties.items()
+            if isinstance(child, dict) and "const" in child
+        }
+        discriminators = literal_names if discriminators is None else discriminators & literal_names
+    assert discriminators is not None
+    for name in discriminators:
+        tags = {
+            canonical_json_bytes(properties[name]["const"]) for properties in properties_by_branch
+        }
+        if len(tags) == len(branches):
+            return
+    raise UnsupportedSchema("tagged object union needs a common unique literal discriminator")
 
 
 def _validate_keywords(schema: JsonObject) -> None:
