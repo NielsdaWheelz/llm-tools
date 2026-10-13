@@ -111,6 +111,7 @@ PUBLIC_FACADE = {
     "can_reserve",
     "publish_host_table",
     "published_tool_ids",
+    "prompt_json_text",
     "raw_input_digest",
     "render_prompt",
     "sha256_hex",

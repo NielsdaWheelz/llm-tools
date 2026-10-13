@@ -14,6 +14,16 @@ from llm_tools.schema import JsonValue, canonical_json_bytes
 _NAME = re.compile(r"[a-z][a-z0-9_]*")
 
 
+def prompt_json_text(value: JsonValue) -> str:
+    """Encode reversible JSON prompt data without changing identity encoding."""
+    return (
+        canonical_json_bytes(value)
+        .decode("utf-8")
+        .replace("\ufffe", "\\ufffe")
+        .replace("\uffff", "\\uffff")
+    )
+
+
 class PromptSectionKind(str):
     """A semantic section kind rendered as data, never as a tag name."""
 
@@ -65,17 +75,17 @@ class PromptText:
 
 @dataclass(frozen=True, slots=True, init=False)
 class PromptJson:
-    """A canonical immutable snapshot of a JSON value."""
+    """An immutable JSON snapshot with reversible prompt presentation."""
 
-    _canonical_text: str
+    _json_text: str
 
     def __init__(self, value: JsonValue) -> None:
-        object.__setattr__(self, "_canonical_text", canonical_json_bytes(value).decode("utf-8"))
+        object.__setattr__(self, "_json_text", prompt_json_text(value))
 
     @property
     def value(self) -> JsonValue:
         """Return an independent JSON copy for durable host context."""
-        return json.loads(self._canonical_text)
+        return json.loads(self._json_text)
 
 
 @dataclass(frozen=True, slots=True)
@@ -125,7 +135,7 @@ def render_prompt(value: PromptSection | PromptContent) -> str:
     if isinstance(value, PromptText):
         return _escape_text(value.text)
     if isinstance(value, PromptJson):
-        return _escape_text(value._canonical_text)
+        return _escape_text(value._json_text)
     if isinstance(value, PromptSections):
         return "\n".join(_render_section(section) for section in value.sections)
     raise TypeError("render_prompt requires a typed prompt value")
