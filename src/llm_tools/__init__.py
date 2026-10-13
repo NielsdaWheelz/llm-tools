@@ -77,6 +77,7 @@ from .prompt_sections import (
     PromptSectionKind,
     PromptSections,
     PromptText,
+    prompt_json_text,
     render_prompt,
 )
 from .recorders import TransientPositionRecorder
@@ -211,6 +212,7 @@ __all__ = [
     "can_reserve",
     "publish_host_table",
     "published_tool_ids",
+    "prompt_json_text",
     "raw_input_digest",
     "render_prompt",
     "sha256_hex",

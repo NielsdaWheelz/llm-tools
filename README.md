@@ -143,6 +143,15 @@ profile publishes an actual empty `tools` array; no placeholder capability is re
 is exact rather than silently truncated, so the consuming host must reject a table that exceeds its
 cumulative model-context limit.
 
+`prompt_json_text(value)` encodes reversible JSON prompt data, escaping controls,
+quotes, backslashes and the XML-disallowed `u+fffe`/`u+ffff` while retaining other
+Unicode. It adds no HTML escaping. `PromptJson` keeps an immutable snapshot using
+this presentation; `render_prompt` supplies the sole HTML/XML-like escaping pass.
+Use `PromptJson(text)` for arbitrary text as a JSON string, or the helper when a
+larger host-owned text frame needs embedded JSON data. Identity encoding through
+`canonical_json_bytes` and strict `PromptText` validation remain unchanged. Budget
+the actual rendered form, including JSON expansion and enclosing sections.
+
 The durable execution boundary is asynchronous end to end. `BudgetState.reserve/settle` and every
 mutating `PositionRecorder` operation are `async`; `ToolExecutor.execute` awaits them and the bound
 handler. `terminalize_and_settle` still owns one atomic, idempotent terminal-result and budget-
