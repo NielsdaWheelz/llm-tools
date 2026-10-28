@@ -30,6 +30,7 @@ class WebSearchResultType(StrEnum):
 class WebSearchErrorCode(StrEnum):
     INVALID_REQUEST = "invalid_request"
     INVALID_KEY = "invalid_key"
+    PAYMENT_REQUIRED = "payment_required"
     RATE_LIMITED = "rate_limited"
     TIMEOUT = "timeout"
     PROVIDER_DOWN = "provider_down"

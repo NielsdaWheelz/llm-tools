@@ -179,7 +179,10 @@ keyword-only `attempt_started` callback and invoke it synchronously exactly once
 each external attempt. They must also propagate task cancellation unchanged; suppressing or
 replacing cancellation violates the provider contract. Unexpected provider `TimeoutError` and
 external task cancellation are not normalized by the binding and retain the executor's recovery
-semantics.
+semantics. Brave authentication, payment, network and timeout failures also return
+`UpstreamUnavailable`; authentication and payment refusals are not retried. The binding logs
+the provider and normalized failure code without query or credential data. A 402 is
+`payment_required` for programmatic provider callers, distinct from an invalid request.
 
 `bind_web_read(reader)` carries implementation revision `llm-tools-web-read-v3`. The reader ignores
 headers it does not consume, including repeated metadata. It rejects repeated framing, content-type,

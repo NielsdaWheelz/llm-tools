@@ -177,7 +177,7 @@ async def test_operation_deadline_is_validated_and_frozen_into_policy_identity(
 
     assert default.policy_inputs["operation_deadline_seconds"] == 12.0
     assert unavailable.policy_inputs["operation_deadline_seconds"] == 12.0
-    assert default.implementation_revision == "llm-tools-web-search-v2"
+    assert default.implementation_revision == "llm-tools-web-search-v3"
     assert default.policy_epoch == "web-search-v2"
     assert default.policy_revision == explicit_default.policy_revision
     assert default.policy_revision == unavailable.policy_revision
