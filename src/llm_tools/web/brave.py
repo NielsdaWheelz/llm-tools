@@ -238,6 +238,8 @@ def _provider_request_id(response: httpx.Response, data: dict[str, Any]) -> str 
 def _error_from_response(response: httpx.Response) -> WebSearchError:
     if response.status_code in (401, 403):
         code = WebSearchErrorCode.INVALID_KEY
+    elif response.status_code == 402:
+        code = WebSearchErrorCode.PAYMENT_REQUIRED
     elif response.status_code == 429:
         code = WebSearchErrorCode.RATE_LIMITED
     elif 400 <= response.status_code < 500:

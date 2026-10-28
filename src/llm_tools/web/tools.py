@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import math
 from datetime import datetime
 from typing import cast
@@ -53,8 +54,10 @@ from llm_tools.web.contracts import (
 )
 from llm_tools.web.reader import SafeWebReader
 
+_logger = logging.getLogger(__name__)
+
 _WEB_SEARCH_OPERATION_DEADLINE_SECONDS = 12.0
-_WEB_SEARCH_IMPLEMENTATION_REVISION = "llm-tools-web-search-v2"
+_WEB_SEARCH_IMPLEMENTATION_REVISION = "llm-tools-web-search-v3"
 _WEB_SEARCH_POLICY_EPOCH = PolicyEpoch("web-search-v2")
 _WEB_READ_IMPLEMENTATION_REVISION = "llm-tools-web-read-v3"
 _WEB_READ_POLICY_EPOCH = PolicyEpoch("web-read-v1")
@@ -165,18 +168,24 @@ def bind_brave_web_search(
         except TimeoutError as exc:
             if not operation_timeout.expired():
                 raise
+            _logger.warning("web search operation timed out after %d attempts", attempts)
             raise DeclaredToolFailure(UpstreamUnavailable(), actual_attempts=attempts) from exc
         except WebSearchError as exc:
             if exc.attempts != attempts:
                 raise RuntimeError("Web search provider reported inconsistent attempts") from exc
-            if exc.code in {
-                WebSearchErrorCode.INVALID_KEY,
-                WebSearchErrorCode.INVALID_REQUEST,
-            }:
+            if exc.code is WebSearchErrorCode.INVALID_REQUEST:
                 raise RuntimeError("configured Brave binding violated host policy") from exc
+            _logger.warning(
+                "web search unavailable: provider=%s code=%s status=%s",
+                exc.provider,
+                exc.code,
+                exc.status_code,
+            )
             if exc.code is WebSearchErrorCode.RATE_LIMITED:
                 error: WebSearchToolError = RateLimited()
             elif exc.code in {
+                WebSearchErrorCode.INVALID_KEY,
+                WebSearchErrorCode.PAYMENT_REQUIRED,
                 WebSearchErrorCode.PROVIDER_DOWN,
                 WebSearchErrorCode.TIMEOUT,
             }:
