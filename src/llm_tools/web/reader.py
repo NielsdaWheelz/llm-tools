@@ -635,8 +635,17 @@ def _decode_text(content: bytes, charset: str | None) -> str:
 def _extract(content: bytes, media_type: str, charset: str | None) -> tuple[str, str | None, str]:
     decoded = _decode_text(content, charset)
     if media_type == "application/json":
+
+        def reject_constant(_value: str) -> None:
+            raise ValueError("non-JSON numeric constant")
+
         try:
-            json.loads(decoded)
+            json.loads(
+                decoded,
+                parse_int=str,
+                parse_float=str,
+                parse_constant=reject_constant,
+            )
         except (json.JSONDecodeError, RecursionError, ValueError):
             raise WebReadFailure(InvalidUpstreamResponse(), attempts=1) from None
         return decoded, None, WEB_READ_PROJECTIONS[media_type]
