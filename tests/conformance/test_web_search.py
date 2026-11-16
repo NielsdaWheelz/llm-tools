@@ -49,7 +49,7 @@ async def search_client() -> AsyncIterator[httpx.AsyncClient]:
         assert request.url.path == "/res/v1/web/search"
         assert request.url.params["q"] == "portable tool architecture"
         assert request.url.params["freshness"] == "pw"
-        assert request.url.params["count"] == "2"
+        assert request.url.params["count"] == "20"
         assert request.url.params["country"] == "us"
         assert request.url.params["search_lang"] == "en"
         assert request.url.params["safesearch"] == "moderate"
@@ -63,9 +63,9 @@ async def search_client() -> AsyncIterator[httpx.AsyncClient]:
                     "results": [
                         {
                             "title": "Portable tools",
-                            "url": "HTTPS://Example.COM:443/tools?q=LLM Tools#section",
+                            "url": "https://example.com/tools?q=LLM%20Tools#section",
                             "description": "Primary snippet",
-                            "extra_snippets": ["More context", "", 7],
+                            "extra_snippets": ["More context"],
                             "age": "2026-08-12T10:00:00Z",
                             "profile": {"name": "Example Docs"},
                             "provider_specific": {"must": "not leak"},
@@ -122,32 +122,23 @@ def test_model_visible_contract_is_small_closed_and_honest() -> None:
     assert WEB_SEARCH_SPEC.summary == "Search the public web for ranked sources and snippets."
     assert "untrusted" in WEB_SEARCH_SPEC.documentation.text
     assert "read the source" in WEB_SEARCH_SPEC.documentation.text.lower()
-    assert WEB_SEARCH_SPEC.input_schema.semantic == {
-        "additionalProperties": False,
-        "properties": {
-            "freshness_days": {"anyOf": [{"minimum": 1, "type": "integer"}, {"type": "null"}]},
-            "query": {
-                "maxLength": 400,
-                "minLength": 2,
-                "pattern": r"^\s*\S+(?:\s+\S+){0,49}\s*$",
-                "type": "string",
-            },
-        },
-        "required": ["freshness_days", "query"],
-        "type": "object",
-    }
+    schema = WEB_SEARCH_SPEC.input_schema.semantic
+    assert schema["additionalProperties"] is False
+    assert set(schema["required"]) == {"query", "freshness", "page_size", "cursor"}
     assert WEB_SEARCH_SPEC.limits.max_attempts == 2
-    assert WEB_SEARCH_SPEC.limits.max_output_bytes == 32 * 1_024
+    assert WEB_SEARCH_SPEC.limits.max_output_bytes == 64 * 1_024
     assert WEB_SEARCH_SPEC.limits.deadline_seconds == 15.0
     result_schema = WEB_SEARCH_SPEC.success_schema.semantic["properties"]["results"]
-    assert result_schema["maxItems"] == 10
-    assert result_schema["items"]["properties"]["rank"]["maximum"] == 10
+    assert result_schema["maxItems"] == 20
+    assert "maximum" not in result_schema["items"]["properties"]["rank"]
     declared = WEB_SEARCH_SPEC.declared_error_schema
     assert declared is not None
     assert {branch["properties"]["type"]["const"] for branch in declared.semantic["anyOf"]} == {
         "RateLimited",
         "UpstreamUnavailable",
         "InvalidUpstreamResponse",
+        "InvalidCursor",
+        "StaleCursor",
     }
 
 
@@ -157,11 +148,9 @@ async def test_model_binding_remains_capped_at_ten_results(
 ) -> None:
     provider = BraveSearchProvider(search_client, api_key="test-key")
 
-    binding = bind_brave_web_search(provider, max_results=10)
+    binding = bind_brave_web_search(provider)
 
-    assert binding.policy_inputs["max_results"] == 10
-    with pytest.raises(ValueError, match="between 1 and 10"):
-        bind_brave_web_search(provider, max_results=11)
+    assert binding.policy_inputs["provider_count"] == 20
 
 
 @pytest.mark.asyncio
@@ -177,8 +166,8 @@ async def test_operation_deadline_is_validated_and_frozen_into_policy_identity(
 
     assert default.policy_inputs["operation_deadline_seconds"] == 12.0
     assert unavailable.policy_inputs["operation_deadline_seconds"] == 12.0
-    assert default.implementation_revision == "llm-tools-web-search-v3"
-    assert default.policy_epoch == "web-search-v2"
+    assert default.implementation_revision == "llm-tools-web-search-v4"
+    assert default.policy_epoch == "web-search-v3"
     assert default.policy_revision == explicit_default.policy_revision
     assert default.policy_revision == unavailable.policy_revision
     assert tightened.policy_revision != default.policy_revision
@@ -240,13 +229,19 @@ async def test_binding_preserves_rank_identity_provenance_and_attempt_count(
 ) -> None:
     binding = bind_brave_web_search(
         BraveSearchProvider(search_client, api_key="test-key"),
-        max_results=2,
     )
     context = _context(binding)
 
     result = await ToolExecutor.execute(
         binding,
-        ParsedJson({"query": "  portable   tool architecture ", "freshness_days": 7}),
+        ParsedJson(
+            {
+                "query": "  portable   tool architecture ",
+                "freshness": "pw",
+                "page_size": 20,
+                "cursor": None,
+            }
+        ),
         context,
     )
 
@@ -260,21 +255,12 @@ async def test_binding_preserves_rank_identity_provenance_and_attempt_count(
         "provider_request_id": "brave-request-1",
         "type": "web.search",
     }
-    assert value["results"] == [
-        {
-            "display_url": "example.com/tools",
-            "extra_snippets": ["More context"],
-            "provider": "brave",
-            "provider_request_id": "brave-request-1",
-            "published_at": "2026-08-12",
-            "rank": 1,
-            "result_ref": value["results"][0]["result_ref"],
-            "snippet": "Primary snippet",
-            "source_name": "Example Docs",
-            "title": "Portable tools",
-            "url": "https://example.com/tools?q=LLM%20Tools",
-        }
-    ]
+    assert len(value["results"]) == 2
+    first = value["results"][0]
+    assert first["url"] == "https://example.com/tools?q=LLM%20Tools#section"
+    assert first["extra_snippets"] == ["More context"]
+    assert first["published_at"] == "2026-08-12T10:00:00Z"
+    assert first["source_kind"] == "web" and first["truncated_fields"] == []
     assert value["results"][0]["result_ref"].startswith("brave:web:")
     assert isinstance(context.recorder, InMemoryPositionRecorder)
     record = context.recorder.record(context.position)
@@ -316,7 +302,7 @@ async def test_binding_maps_only_closed_safe_errors(
         context = _context(binding)
         result = await ToolExecutor.execute(
             binding,
-            ParsedJson({"query": "safe error", "freshness_days": None}),
+            ParsedJson({"query": "safe error", "freshness": None, "page_size": 20, "cursor": None}),
             context,
         )
 
@@ -345,7 +331,9 @@ async def test_operation_deadline_terminalizes_instead_of_requiring_owner_recove
             operation_deadline_seconds=0.05,
         )
         context = _context(binding, position="turn-1/search-operation-deadline")
-        raw = ParsedJson({"query": "blocked upstream", "freshness_days": None})
+        raw = ParsedJson(
+            {"query": "blocked upstream", "freshness": None, "page_size": 20, "cursor": None}
+        )
 
         result = await ToolExecutor.execute(binding, raw, context)
         replayed = await ToolExecutor.execute(binding, raw, context)
@@ -389,7 +377,14 @@ async def test_operation_deadline_reports_both_started_attempts() -> None:
 
         result = await ToolExecutor.execute(
             binding,
-            ParsedJson({"query": "second attempt timeout", "freshness_days": None}),
+            ParsedJson(
+                {
+                    "query": "second attempt timeout",
+                    "freshness": None,
+                    "page_size": 20,
+                    "cursor": None,
+                }
+            ),
             context,
         )
 
@@ -424,7 +419,9 @@ async def test_operation_deadline_covers_retry_backoff_with_accurate_attempts() 
 
         result = await ToolExecutor.execute(
             binding,
-            ParsedJson({"query": "bounded backoff", "freshness_days": None}),
+            ParsedJson(
+                {"query": "bounded backoff", "freshness": None, "page_size": 20, "cursor": None}
+            ),
             context,
         )
 
@@ -466,7 +463,14 @@ async def test_unexpected_outer_timeout_still_requires_billed_once_recovery() ->
         with pytest.raises(RecoveryRequired, match="uncertain"):
             await ToolExecutor.execute(
                 binding,
-                ParsedJson({"query": "unexpected timeout", "freshness_days": None}),
+                ParsedJson(
+                    {
+                        "query": "unexpected timeout",
+                        "freshness": None,
+                        "page_size": 20,
+                        "cursor": None,
+                    }
+                ),
                 context,
             )
 
@@ -481,6 +485,8 @@ async def test_unexpected_outer_timeout_still_requires_billed_once_recovery() ->
 @pytest.mark.asyncio
 async def test_provider_timeout_still_requires_billed_once_recovery() -> None:
     class UnexpectedTimeoutProvider:
+        policy = __import__("llm_tools").WebSearchPolicy()
+
         async def search(
             self,
             request: WebSearchRequest,
@@ -501,7 +507,9 @@ async def test_provider_timeout_still_requires_billed_once_recovery() -> None:
     with pytest.raises(RecoveryRequired, match="uncertain"):
         await ToolExecutor.execute(
             binding,
-            ParsedJson({"query": "unexpected timeout", "freshness_days": None}),
+            ParsedJson(
+                {"query": "unexpected timeout", "freshness": None, "page_size": 20, "cursor": None}
+            ),
             context,
         )
 
@@ -536,7 +544,14 @@ async def test_external_cancellation_still_leaves_billed_once_recovery_state() -
         task = asyncio.create_task(
             ToolExecutor.execute(
                 binding,
-                ParsedJson({"query": "cancelled search", "freshness_days": None}),
+                ParsedJson(
+                    {
+                        "query": "cancelled search",
+                        "freshness": None,
+                        "page_size": 20,
+                        "cursor": None,
+                    }
+                ),
                 context,
             )
         )
@@ -558,6 +573,8 @@ async def test_external_cancellation_still_leaves_billed_once_recovery_state() -
 @pytest.mark.asyncio
 async def test_expired_operation_cannot_return_success_after_suppressing_cancellation() -> None:
     class SuppressingProvider:
+        policy = __import__("llm_tools").WebSearchPolicy()
+
         async def search(
             self,
             request: WebSearchRequest,
@@ -587,7 +604,9 @@ async def test_expired_operation_cannot_return_success_after_suppressing_cancell
 
     result = await ToolExecutor.execute(
         binding,
-        ParsedJson({"query": "suppressed cancellation", "freshness_days": None}),
+        ParsedJson(
+            {"query": "suppressed cancellation", "freshness": None, "page_size": 20, "cursor": None}
+        ),
         context,
     )
 
@@ -638,7 +657,9 @@ async def test_profile_tightened_attempt_limit_reaches_brave() -> None:
         )
         result = await ToolExecutor.execute(
             binding,
-            ParsedJson({"query": "one attempt", "freshness_days": None}),
+            ParsedJson(
+                {"query": "one attempt", "freshness": None, "page_size": 20, "cursor": None}
+            ),
             context,
         )
 
@@ -683,15 +704,18 @@ async def test_effective_output_limit_deterministically_truncates_search_results
     ) as client:
         binding = bind_brave_web_search(
             BraveSearchProvider(client, api_key="test-key"),
-            max_results=2,
         )
         full = await ToolExecutor.execute(
             binding,
-            ParsedJson({"query": "bounded output", "freshness_days": None}),
+            ParsedJson(
+                {"query": "bounded output", "freshness": None, "page_size": 20, "cursor": None}
+            ),
             _context(binding, position="turn-1/search-full"),
         )
         assert full["type"] == "Success"
         one_result_value = {**full["value"], "results": full["value"]["results"][:1]}
+        # A local continuation cursor is larger than a final provider cursor.
+        one_result_value["next_cursor"] = "x" * 420
         one_result_bytes = len(canonical_json_bytes({"type": "Success", "value": one_result_value}))
         tightened = WEB_SEARCH_SPEC.limits.tightened(max_output_bytes=one_result_bytes)
         bounded_context = _context(
@@ -701,7 +725,9 @@ async def test_effective_output_limit_deterministically_truncates_search_results
         )
         bounded = await ToolExecutor.execute(
             binding,
-            ParsedJson({"query": "bounded output", "freshness_days": None}),
+            ParsedJson(
+                {"query": "bounded output", "freshness": None, "page_size": 20, "cursor": None}
+            ),
             bounded_context,
         )
 
@@ -713,13 +739,16 @@ async def test_effective_output_limit_deterministically_truncates_search_results
         )
         failure = await ToolExecutor.execute(
             binding,
-            ParsedJson({"query": "bounded output", "freshness_days": None}),
+            ParsedJson(
+                {"query": "bounded output", "freshness": None, "page_size": 20, "cursor": None}
+            ),
             failure_context,
         )
 
     assert bounded["type"] == "Success"
     assert bounded["value"]["results"] == full["value"]["results"][:1]
-    assert len(canonical_json_bytes(bounded)) == one_result_bytes
+    assert bounded["value"]["next_cursor"] is not None
+    assert len(canonical_json_bytes(bounded)) <= one_result_bytes
     assert failure == {"type": "Failure", "error": {"type": "BudgetExceeded"}}
     assert calls == 3
     assert isinstance(failure_context.recorder, InMemoryPositionRecorder)
@@ -752,7 +781,9 @@ async def test_oversized_provider_result_url_is_dropped_before_the_public_bindin
         context = _context(binding, position="turn-1/search-oversized-url")
         result = await ToolExecutor.execute(
             binding,
-            ParsedJson({"query": "oversized result", "freshness_days": None}),
+            ParsedJson(
+                {"query": "oversized result", "freshness": None, "page_size": 20, "cursor": None}
+            ),
             context,
         )
 
@@ -790,14 +821,17 @@ async def test_malformed_provider_item_terminalizes_the_billed_call() -> None:
         context = _context(binding, position="turn-1/search-malformed-item")
         result = await ToolExecutor.execute(
             binding,
-            ParsedJson({"query": "malformed result", "freshness_days": None}),
+            ParsedJson(
+                {"query": "malformed result", "freshness": None, "page_size": 20, "cursor": None}
+            ),
             context,
         )
 
-    assert result == {
-        "type": "Failure",
-        "error": {"type": "InvalidUpstreamResponse"},
-    }
+    assert result["type"] == "Success"
+    assert result["value"]["results"] == []
+    assert result["value"]["omissions"] == [
+        {"source_kind": "web", "provider_index": 0, "reason": "invalid_item"}
+    ]
     assert isinstance(context.recorder, InMemoryPositionRecorder)
     record = context.recorder.record(context.position)
     assert record.uncertain is False
@@ -819,7 +853,9 @@ async def test_deep_provider_json_terminalizes_the_billed_call() -> None:
         context = _context(binding, position="turn-1/search-deep-json")
         result = await ToolExecutor.execute(
             binding,
-            ParsedJson({"query": "deep response", "freshness_days": None}),
+            ParsedJson(
+                {"query": "deep response", "freshness": None, "page_size": 20, "cursor": None}
+            ),
             context,
         )
 
@@ -850,7 +886,9 @@ async def test_invalid_provider_content_encoding_terminalizes_the_billed_call() 
         context = _context(binding, position="turn-1/search-invalid-encoding")
         result = await ToolExecutor.execute(
             binding,
-            ParsedJson({"query": "invalid encoding", "freshness_days": None}),
+            ParsedJson(
+                {"query": "invalid encoding", "freshness": None, "page_size": 20, "cursor": None}
+            ),
             context,
         )
 

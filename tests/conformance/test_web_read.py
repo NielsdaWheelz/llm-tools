@@ -223,21 +223,18 @@ def _execution_context(
 
 
 def test_model_visible_read_contract_states_security_and_non_persistence() -> None:
-    assert WEB_READ_SPEC.summary == "Read one public web page as bounded inert text with evidence."
     documentation = WEB_READ_SPEC.documentation.text.lower()
-    assert "does not persist" in documentation
-    assert "untrusted" in documentation
-    assert "javascript" in documentation
-    assert "subresources" in documentation
-    assert WEB_READ_SPEC.input_schema.semantic == {
-        "additionalProperties": False,
-        "properties": {"url": {"maxLength": 4096, "minLength": 1, "type": "string"}},
-        "required": ["url"],
-        "type": "object",
-    }
+    assert (
+        "untrusted" in documentation
+        and "scripts" in documentation
+        and "subresources" in documentation
+    )
+    schema = WEB_READ_SPEC.input_schema.semantic
+    assert schema["additionalProperties"] is False
+    assert set(schema["required"]) == {"url", "offset", "max_bytes", "expected_digest"}
     assert WEB_READ_SPEC.limits.max_attempts == 8
-    assert WEB_READ_SPEC.limits.max_input_bytes == 24_616
-    assert WEB_READ_SPEC.limits.max_output_bytes == 512 * 1_024
+    assert WEB_READ_SPEC.limits.max_input_bytes == 32768
+    assert WEB_READ_SPEC.limits.max_output_bytes == 65536
     assert WEB_READ_SPEC.limits.deadline_seconds == 20.0
     declared = WEB_READ_SPEC.declared_error_schema
     assert declared is not None
@@ -249,6 +246,7 @@ def test_model_visible_read_contract_states_security_and_non_persistence() -> No
         "RateLimited",
         "UpstreamUnavailable",
         "InvalidUpstreamResponse",
+        "SourceChanged",
     }
     for deadline in (True, float("nan"), float("inf")):
         with pytest.raises((TypeError, ValueError)):
@@ -259,8 +257,8 @@ def test_web_read_binding_revision_records_entity_extraction_behavior() -> None:
     available = bind_web_read(SafeWebReader(resolver=StaticResolver({})))
     unavailable = web_family().bindings[1]
 
-    assert available.implementation_revision == "llm-tools-web-read-v3"
-    assert unavailable.implementation_revision == "llm-tools-web-read-v3"
+    assert available.implementation_revision == "llm-tools-web-read-v4"
+    assert unavailable.implementation_revision == "llm-tools-web-read-v4"
     assert available.policy_revision == unavailable.policy_revision
 
 
@@ -273,7 +271,11 @@ async def test_every_schema_valid_4096_character_url_reaches_typed_url_validatio
     )
     raw_url = "é" * 4_096
 
-    result = await ToolExecutor.execute(binding, ParsedJson({"url": raw_url}), context)
+    result = await ToolExecutor.execute(
+        binding,
+        ParsedJson({"offset": 0, "max_bytes": 8192, "expected_digest": None, "url": raw_url}),
+        context,
+    )
 
     assert result == {"type": "Failure", "error": {"type": "InvalidUrl"}}
     assert isinstance(context.recorder, InMemoryPositionRecorder)
@@ -287,7 +289,11 @@ async def test_normalized_unicode_url_over_public_output_limit_is_invalid_before
     context = _execution_context(binding, position="turn-1/expanded-url")
     raw_url = "http://public.test/" + "é" * 2_000
 
-    result = await ToolExecutor.execute(binding, ParsedJson({"url": raw_url}), context)
+    result = await ToolExecutor.execute(
+        binding,
+        ParsedJson({"offset": 0, "max_bytes": 8192, "expected_digest": None, "url": raw_url}),
+        context,
+    )
 
     assert result == {"type": "Failure", "error": {"type": "InvalidUrl"}}
     assert resolver.calls == []
@@ -318,9 +324,9 @@ async def test_cross_authority_redirect_revalidates_dns_host_and_evidence() -> N
     assert b"Host: b.test\r\n" in second.requests[0]
     assert result.attempts == 2
     assert [hop.peer_address for hop in result.hops] == [PUBLIC_A, PUBLIC_B]
-    assert result.value.final_url == "http://b.test/final"
+    assert result.value.source.final_url == "http://b.test/final"
     assert result.value.title == "Example & title"
-    assert result.value.media_type == "text/html"
+    assert result.value.source.media_type == "text/html"
     assert result.value.text == "Example & title Hello portable tools"
     assert result.value.evidence.source_uri == "http://a.test/start"
     assert result.value.evidence.final_uri == "http://b.test/final"
@@ -330,10 +336,9 @@ async def test_cross_authority_redirect_revalidates_dns_host_and_evidence() -> N
         "content_encoding": "identity",
         "extraction": "html-visible-text-v2",
         "representation": "decoded-entity-bytes",
-        "text_truncated": False,
         "text_utf8_bytes": len(result.value.text.encode()),
         "type": "web.document",
-        "version": 1,
+        "version": 2,
     }
 
 
@@ -347,10 +352,10 @@ async def test_unicode_query_is_canonically_escaped_in_request_and_evidence() ->
 
     target = b"/search?q=caf%C3%A9&lang=%E6%97%A5%E6%9C%AC%E8%AA%9E"
     assert server.requests[0].startswith(b"GET " + target + b" HTTP/1.1\r\n")
-    assert result.value.final_url == (
+    assert result.value.source.final_url == (
         "http://unicode.test/search?q=caf%C3%A9&lang=%E6%97%A5%E6%9C%AC%E8%AA%9E"
     )
-    assert result.value.evidence.final_uri == result.value.final_url
+    assert result.value.evidence.final_uri == result.value.source.final_url
 
 
 @pytest.mark.asyncio
@@ -365,7 +370,14 @@ async def test_public_binding_strictly_encodes_required_evidence_and_exact_attem
         context = _execution_context(binding)
         result = await ToolExecutor.execute(
             binding,
-            ParsedJson({"url": "http://bound.test/"}),
+            ParsedJson(
+                {
+                    "offset": 0,
+                    "max_bytes": 8192,
+                    "expected_digest": None,
+                    "url": "http://bound.test/",
+                }
+            ),
             context,
         )
 
@@ -494,7 +506,9 @@ async def test_profile_zero_attempt_grant_fails_without_reader_dispatch() -> Non
 
     assert await ToolExecutor.execute(
         binding,
-        ParsedJson({"url": "http://never.test/"}),
+        ParsedJson(
+            {"offset": 0, "max_bytes": 8192, "expected_digest": None, "url": "http://never.test/"}
+        ),
         context,
     ) == {"type": "Failure", "error": {"type": "UpstreamUnavailable"}}
 
@@ -549,7 +563,7 @@ async def test_entity_decoding_is_media_appropriate_and_single_pass(
 
     assert result.value.text == expected_text
     assert result.value.title == expected_title
-    assert result.value.media_type == content_type
+    assert result.value.source.media_type == content_type
     assert len(server.requests) == 1
 
 
@@ -562,14 +576,14 @@ async def test_entity_decoding_is_media_appropriate_and_single_pass(
             "text/plain",
             "gzip",
             "compressed text",
-            "plain-text-v2",
+            "web-plain-source-v3",
         ),
         (
             zlib.compress(b'{"z":1,"a":2}'),
             "application/json",
             "deflate",
-            '{"a":2,"z":1}',
-            "json-canonical-v1",
+            '{"z":1,"a":2}',
+            "web-json-source-v2",
         ),
     ],
 )
@@ -617,12 +631,11 @@ async def test_decoded_and_extracted_text_limits_are_independent() -> None:
         result = await SafeWebReader(
             resolver=StaticResolver({"truncate.test": (PUBLIC_A,)}),
             connector=MappedConnector({"truncate.test": text_server.port}),
-            limits=WebReadLimits(max_text_bytes=5),
         ).read("http://truncate.test/")
-    assert result.value.text == "abcde"
+    assert result.value.text == "abcdefghijk"
     locator = json.loads(result.value.evidence.locator)
-    assert locator["text_truncated"] is True
-    assert locator["text_utf8_bytes"] == 5
+    assert "text_truncated" not in locator
+    assert locator["text_utf8_bytes"] == 11
     assert (
         result.value.evidence.content_sha256 == __import__("hashlib").sha256(html_body).hexdigest()
     )
@@ -634,7 +647,7 @@ async def test_decoded_and_extracted_text_limits_are_independent() -> None:
     [
         (b"payload", "text/plain; charset=rot_13", UnsupportedContent),
         (
-            (b"[" * 1_500) + b"0" + (b"]" * 1_500),
+            (b"[" * 1_500) + b"0",
             "application/json",
             InvalidUpstreamResponse,
         ),
@@ -676,7 +689,14 @@ async def test_malformed_redirect_and_length_terminalize_at_the_binding(response
         context = _execution_context(binding, position="turn-4/malformed-response")
         result = await ToolExecutor.execute(
             binding,
-            ParsedJson({"url": "http://malformed.test/"}),
+            ParsedJson(
+                {
+                    "offset": 0,
+                    "max_bytes": 8192,
+                    "expected_digest": None,
+                    "url": "http://malformed.test/",
+                }
+            ),
             context,
         )
 
@@ -724,7 +744,9 @@ async def test_peer_close_error_cannot_override_a_terminal_binding_result() -> N
 
     result = await ToolExecutor.execute(
         binding,
-        ParsedJson({"url": "http://close.test/"}),
+        ParsedJson(
+            {"offset": 0, "max_bytes": 8192, "expected_digest": None, "url": "http://close.test/"}
+        ),
         context,
     )
 
@@ -818,7 +840,14 @@ async def test_deadline_and_ambient_proxy_are_owned_by_direct_reader() -> None:
                 monkeypatch.setenv("HTTPS_PROXY", f"http://127.0.0.1:{proxy.port}")
                 result = await ToolExecutor.execute(
                     binding,
-                    ParsedJson({"url": "http://deadline.test/"}),
+                    ParsedJson(
+                        {
+                            "offset": 0,
+                            "max_bytes": 8192,
+                            "expected_digest": None,
+                            "url": "http://deadline.test/",
+                        }
+                    ),
                     context,
                 )
 
@@ -845,12 +874,19 @@ async def test_effective_output_limit_trims_read_text_and_locator_or_returns_bud
         )
         bounded_context = _execution_context(
             binding,
-            tool_limits=WEB_READ_SPEC.limits.tightened(max_output_bytes=700),
+            tool_limits=WEB_READ_SPEC.limits.tightened(max_output_bytes=1500),
             position="turn-1/read-bounded",
         )
         bounded = await ToolExecutor.execute(
             binding,
-            ParsedJson({"url": "http://bounded-read.test/"}),
+            ParsedJson(
+                {
+                    "offset": 0,
+                    "max_bytes": 8192,
+                    "expected_digest": None,
+                    "url": "http://bounded-read.test/",
+                }
+            ),
             bounded_context,
         )
         minimal_context = _execution_context(
@@ -860,16 +896,25 @@ async def test_effective_output_limit_trims_read_text_and_locator_or_returns_bud
         )
         minimal = await ToolExecutor.execute(
             binding,
-            ParsedJson({"url": "http://bounded-read.test/"}),
+            ParsedJson(
+                {
+                    "offset": 0,
+                    "max_bytes": 8192,
+                    "expected_digest": None,
+                    "url": "http://bounded-read.test/",
+                }
+            ),
             minimal_context,
         )
 
     assert bounded["type"] == "Success"
-    assert len(canonical_json_bytes(bounded)) <= 700
+    assert len(canonical_json_bytes(bounded)) <= 1500
     assert len(bounded["value"]["text"].encode()) < len(body)
     locator = json.loads(bounded["value"]["evidence"]["locator"])
-    assert locator["text_truncated"] is True
-    assert locator["text_utf8_bytes"] == len(bounded["value"]["text"].encode())
+    assert "text_truncated" not in locator
+    assert locator["total_bytes"] == len(body)
+    assert locator["end_offset"] == len(bounded["value"]["text"].encode())
+    assert bounded["value"]["next_offset"] == locator["end_offset"]
     assert bounded["value"]["evidence"]["content_sha256"] == (
         __import__("hashlib").sha256(body).hexdigest()
     )

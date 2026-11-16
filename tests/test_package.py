@@ -117,6 +117,13 @@ PUBLIC_FACADE = {
     "sha256_hex",
     "validate_tool_input",
     "web_family",
+    "WebSearchPolicy",
+    "WebSearchSourceOperation",
+    "web_search_source_operation",
+    "fit_text_chunk",
+    "html_visible_text",
+    "projection_digest",
+    "utf8_slice",
 }
 
 

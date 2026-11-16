@@ -2,6 +2,7 @@
 
 from .budgets import BudgetTotals, RunBudgetState, can_reserve
 from .catalog import ToolCatalog, ToolFamily
+from .content import fit_text_chunk, html_visible_text, projection_digest, utf8_slice
 from .declaration import (
     Available,
     NoDeclaredError,
@@ -97,6 +98,7 @@ from .web.contracts import (
     WebSearchError,
     WebSearchErrorCode,
     WebSearchInput,
+    WebSearchPolicy,
     WebSearchProvider,
     WebSearchRequest,
     WebSearchResponse,
@@ -107,9 +109,11 @@ from .web.reader import DirectConnector, SafeWebReader, SystemResolver, WebReadL
 from .web.tools import (
     WEB_READ_SPEC,
     WEB_SEARCH_SPEC,
+    WebSearchSourceOperation,
     bind_brave_web_search,
     bind_web_read,
     web_family,
+    web_search_source_operation,
 )
 
 __all__ = [
@@ -218,4 +222,11 @@ __all__ = [
     "sha256_hex",
     "validate_tool_input",
     "web_family",
+    "WebSearchPolicy",
+    "WebSearchSourceOperation",
+    "web_search_source_operation",
+    "fit_text_chunk",
+    "html_visible_text",
+    "projection_digest",
+    "utf8_slice",
 ]
