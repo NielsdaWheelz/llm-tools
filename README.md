@@ -1,5 +1,10 @@
 # llm-tools
 
+the executor supplies each handler's absolute monotonic `ExecutionContext.deadline`.
+handlers that track external attempts can distinguish an elapsed operation deadline
+from earlier task cancellation and report their actual count through `BoundaryFailure`.
+the executor uses that same deadline; caller-created contexts leave it unset.
+
 A provider-neutral typed tool kernel with four portable tools: `web.search`, `web.read`,
 `tool.search`, and `tool.read`.
 

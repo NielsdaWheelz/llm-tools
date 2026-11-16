@@ -192,6 +192,7 @@ class ExecutionContext:
     scope: Scope
     cancellation: Cancellation
     telemetry: Telemetry
+    deadline: float | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -359,18 +360,20 @@ class ToolExecutor:
                 RuntimeError("position attempt accounting changed before dispatch"),
             )
         remaining_attempts = limits.max_attempts - prior_attempts
+        deadline_seconds = limits.deadline_seconds
+        if remaining_elapsed is not None:
+            deadline_seconds = min(deadline_seconds, remaining_elapsed)
+        deadline = asyncio.get_running_loop().time() + deadline_seconds
         dispatch_context = replace(
             context,
             grant=replace(
                 context.grant,
                 limits=context.grant.limits.tightened(max_attempts=remaining_attempts),
             ),
+            deadline=deadline,
         )
         try:
-            deadline = limits.deadline_seconds
-            if remaining_elapsed is not None:
-                deadline = min(deadline, remaining_elapsed)
-            async with asyncio.timeout(deadline):
+            async with asyncio.timeout_at(deadline):
                 outcome = await binding.execute.handler(decoded, dispatch_context)
         except BoundaryFailure as failure:
             try:
