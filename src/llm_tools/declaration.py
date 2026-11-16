@@ -162,9 +162,16 @@ class ToolSpec[InputT, SuccessT, ErrorT]:
         success_schema = compile_schema(self.success_type)
         for role, schema in (("input", input_schema), ("success", success_schema)):
             semantic = schema.semantic
-            if (
-                semantic.get("type") != "object"
-                or semantic.get("additionalProperties") is not False
+            # The compiler already requires a unique common literal tag for
+            # object unions. Inputs retain their single-object wire root.
+            branches = (
+                semantic.get("anyOf", semantic.get("oneOf", [semantic]))
+                if role == "success"
+                else [semantic]
+            )
+            if any(
+                branch.get("type") != "object" or branch.get("additionalProperties") is not False
+                for branch in branches
             ):
                 raise ValueError(f"tool {role} schema must be a closed object")
         if self.error_type is NoDeclaredError:

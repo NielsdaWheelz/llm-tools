@@ -14,13 +14,14 @@ import zlib
 from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from html.parser import HTMLParser
 from typing import Protocol
 from urllib.parse import quote, urljoin, urlsplit, urlunsplit
 
+from llm_tools.content import html_visible_text
 from llm_tools.evidence import EvidenceReceipt, sha256_hex
 from llm_tools.schema import canonical_json_bytes
 from llm_tools.web.contracts import (
+    WEB_READ_PROJECTIONS,
     InvalidUpstreamResponse,
     InvalidUrl,
     RateLimited,
@@ -28,17 +29,16 @@ from llm_tools.web.contracts import (
     UnsafeDestination,
     UnsupportedContent,
     UpstreamUnavailable,
+    WebDocument,
     WebReadDeadline,
     WebReadFailure,
     WebReadHop,
     WebReadResponse,
-    WebReadSuccess,
+    WebReadSource,
 )
 
 _REDIRECTS = frozenset({301, 302, 303, 307, 308})
-_ACCEPTED_MEDIA = frozenset(
-    {"application/json", "application/xhtml+xml", "text/html", "text/plain"}
-)
+_ACCEPTED_MEDIA = frozenset(WEB_READ_PROJECTIONS)
 _DENIED_NETWORKS = tuple(
     ipaddress.ip_network(cidr)
     for cidr in (
@@ -77,7 +77,6 @@ class WebReadLimits:
     max_pre_body_retries: int = 2
     max_wire_bytes: int = 2 * 1_024 * 1_024
     max_decoded_bytes: int = 4 * 1_024 * 1_024
-    max_text_bytes: int = 64 * 1_024
     deadline_seconds: float = 20.0
 
     def __post_init__(self) -> None:
@@ -87,7 +86,6 @@ class WebReadLimits:
             self.max_pre_body_retries,
             self.max_wire_bytes,
             self.max_decoded_bytes,
-            self.max_text_bytes,
         )
         if any(isinstance(value, bool) or not isinstance(value, int) for value in integers):
             raise TypeError("Web reader limits must be integers")
@@ -97,7 +95,6 @@ class WebReadLimits:
                 self.max_requests,
                 self.max_wire_bytes,
                 self.max_decoded_bytes,
-                self.max_text_bytes,
             )
             <= 0
         ):
@@ -355,16 +352,14 @@ class SafeWebReader:
                 )
                 decoded_bytes += len(decoded)
                 text, title, extraction = _extract(decoded, media_type, charset)
-                bounded_text, truncated = _truncate_utf8(text, self._limits.max_text_bytes)
                 locator = canonical_json_bytes(
                     {
                         "content_encoding": encoding,
                         "extraction": extraction,
                         "representation": "decoded-entity-bytes",
-                        "text_truncated": truncated,
-                        "text_utf8_bytes": len(bounded_text.encode("utf-8")),
+                        "text_utf8_bytes": len(text.encode("utf-8")),
                         "type": "web.document",
-                        "version": 1,
+                        "version": 2,
                     }
                 ).decode("utf-8")
                 observed_at = datetime.now(tz=UTC)
@@ -377,11 +372,13 @@ class SafeWebReader:
                     locator=locator,
                 )
                 return WebReadResponse(
-                    value=WebReadSuccess(
-                        final_url=current.uri,
+                    value=WebDocument(
+                        source=WebReadSource(
+                            source_uri=source.uri, final_url=current.uri, media_type=media_type
+                        ),
                         title=title,
-                        media_type=media_type,
-                        text=bounded_text,
+                        text=text,
+                        projection=extraction,
                         evidence=receipt,
                     ),
                     attempts=attempts,
@@ -636,72 +633,17 @@ def _decode_text(content: bytes, charset: str | None) -> str:
 
 
 def _extract(content: bytes, media_type: str, charset: str | None) -> tuple[str, str | None, str]:
+    decoded = _decode_text(content, charset)
     if media_type == "application/json":
         try:
-            value = json.loads(_decode_text(content, charset))
-            text = canonical_json_bytes(value).decode("utf-8")
-        except (json.JSONDecodeError, RecursionError, ValueError, UnicodeDecodeError):
+            json.loads(decoded)
+        except (json.JSONDecodeError, RecursionError, ValueError):
             raise WebReadFailure(InvalidUpstreamResponse(), attempts=1) from None
-        return text, None, "json-canonical-v1"
-    decoded = _decode_text(content, charset)
+        return decoded, None, WEB_READ_PROJECTIONS[media_type]
     if media_type == "text/plain":
-        return _collapse_text(decoded), None, "plain-text-v2"
-    parser = _VisibleTextParser()
+        return decoded, None, WEB_READ_PROJECTIONS[media_type]
     try:
-        parser.feed(decoded)
-        parser.close()
-    except Exception:
+        text, title = html_visible_text(decoded)
+    except (ValueError, RecursionError):
         raise WebReadFailure(InvalidUpstreamResponse(), attempts=1) from None
-    return _collapse_text(" ".join(parser.text)), parser.title, "html-visible-text-v2"
-
-
-class _VisibleTextParser(HTMLParser):
-    def __init__(self) -> None:
-        super().__init__(convert_charrefs=True)
-        self.text: list[str] = []
-        self._excluded = 0
-        self._in_title = False
-        self._title: list[str] = []
-
-    @property
-    def title(self) -> str | None:
-        value = _collapse_text(" ".join(self._title))
-        return value[:512] if value else None
-
-    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
-        del attrs
-        lowered = tag.lower()
-        if lowered in {"script", "style", "template", "noscript"}:
-            self._excluded += 1
-        elif lowered == "title":
-            self._in_title = True
-
-    def handle_endtag(self, tag: str) -> None:
-        lowered = tag.lower()
-        if lowered in {"script", "style", "template", "noscript"} and self._excluded:
-            self._excluded -= 1
-        elif lowered == "title":
-            self._in_title = False
-
-    def handle_data(self, data: str) -> None:
-        if self._excluded:
-            return
-        if self._in_title:
-            self._title.append(data)
-        self.text.append(data)
-
-
-def _collapse_text(value: str) -> str:
-    return " ".join(value.split())
-
-
-def _truncate_utf8(value: str, max_bytes: int) -> tuple[str, bool]:
-    encoded = value.encode("utf-8")
-    if len(encoded) <= max_bytes:
-        return value, False
-    bounded = encoded[:max_bytes]
-    while True:
-        try:
-            return bounded.decode("utf-8"), True
-        except UnicodeDecodeError as exc:
-            bounded = bounded[: exc.start]
+    return text, title, WEB_READ_PROJECTIONS[media_type]

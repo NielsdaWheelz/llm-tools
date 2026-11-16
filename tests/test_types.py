@@ -37,9 +37,9 @@ def test_programmatic_request_is_broader_than_model_visible_input() -> None:
     assert one_character.query == "x"
     assert len(many_words.query.split()) == 51
     with pytest.raises(ValidationError):
-        WebSearchInput(query="x", freshness_days=None)
+        WebSearchInput(query="x", freshness=None, page_size=20, cursor=None)
     with pytest.raises(ValidationError):
-        WebSearchInput(query=many_words.query, freshness_days=None)
+        WebSearchInput(query=many_words.query, freshness=None, page_size=20, cursor=None)
 
 
 def test_request_rejects_limit_above_the_host_owned_ceiling() -> None:
@@ -51,7 +51,7 @@ def test_request_rejects_limit_above_the_host_owned_ceiling() -> None:
     ("changes", "message"),
     [
         ({"limit": True}, "limit"),
-        ({"freshness_days": True}, "freshness"),
+        ({"freshness": True}, "freshness"),
         ({"max_attempts": 1.5}, "attempt"),
     ],
 )

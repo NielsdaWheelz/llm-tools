@@ -8,14 +8,18 @@ import json
 import math
 from collections.abc import Callable
 from datetime import UTC, datetime
-from typing import Any
-from urllib.parse import parse_qsl, quote, urlencode, urlsplit, urlunsplit
+from typing import Any, Literal
+from urllib.parse import urlsplit
 
 import httpx
 
 from llm_tools.web.contracts import (
+    DEFAULT_WEB_SEARCH_POLICY,
+    WebProviderQuery,
     WebSearchError,
     WebSearchErrorCode,
+    WebSearchOmission,
+    WebSearchPolicy,
     WebSearchRequest,
     WebSearchResponse,
     WebSearchResultItem,
@@ -23,7 +27,6 @@ from llm_tools.web.contracts import (
 )
 
 _PROVIDER = "brave"
-_DEFAULT_BASE_URL = "https://api.search.brave.com/res/v1"
 _RETRY_BACKOFF_SECONDS = 0.25
 _MAX_RETRY_AFTER_SECONDS = 2.0
 # httpx decodes Content-Encoding before yielding response bytes.
@@ -38,14 +41,14 @@ class BraveSearchProvider:
         client: httpx.AsyncClient,
         *,
         api_key: str,
-        base_url: str = _DEFAULT_BASE_URL,
+        policy: WebSearchPolicy = DEFAULT_WEB_SEARCH_POLICY,
         timeout_seconds: float = 8.0,
     ) -> None:
         self._client = client
         self._api_key = api_key.strip()
         if not self._api_key:
             raise ValueError("Brave Search API key must not be empty")
-        self._base_url = _normalize_base_url(base_url)
+        self.policy = policy
         if isinstance(timeout_seconds, bool) or not isinstance(timeout_seconds, (int, float)):
             raise TypeError("Brave Search timeout_seconds must be numeric")
         self._timeout_seconds = float(timeout_seconds)
@@ -147,9 +150,9 @@ class BraveSearchProvider:
 
     def _endpoint_for(self, request: WebSearchRequest) -> str:
         if request.result_type == WebSearchResultType.NEWS:
-            return f"{self._base_url}/news/search"
+            return self.policy.endpoint.removesuffix("/web/search") + "/news/search"
         if request.result_type in (WebSearchResultType.WEB, WebSearchResultType.MIXED):
-            return f"{self._base_url}/web/search"
+            return self.policy.endpoint
         raise ValueError(f"Unsupported web search result type: {request.result_type}")
 
     def _params_for(self, request: WebSearchRequest) -> dict[str, str | int]:
@@ -162,16 +165,17 @@ class BraveSearchProvider:
         params: dict[str, str | int] = {
             "q": query,
             "count": request.limit,
+            "offset": request.offset,
             "country": request.country.lower(),
             "search_lang": request.search_lang,
             "safesearch": request.safe_search,
-            "spellcheck": 1,
-            "extra_snippets": "true",
+            "spellcheck": int(request.spellcheck),
+            "extra_snippets": str(request.extra_snippets).lower(),
         }
-        if request.freshness_days:
-            params["freshness"] = _freshness_window(request.freshness_days)
-        if request.result_type == WebSearchResultType.WEB:
-            params["result_filter"] = "web"
+        if request.freshness is not None:
+            params["freshness"] = request.freshness
+        if request.result_filter is not None:
+            params["result_filter"] = request.result_filter
         return params
 
     def _response_from_json(
@@ -183,28 +187,46 @@ class BraveSearchProvider:
         attempts: int,
     ) -> WebSearchResponse:
         results: list[WebSearchResultItem] = []
-        seen_urls: set[str] = set()
-
-        for raw in _ordered_results(data, request.result_type):
-            if len(results) >= request.limit:
-                break
-            item = _result_item_from_json(
-                raw,
-                len(results) + 1,
-                provider_request_id,
-                request.result_type,
-            )
-            if item is None or item.url in seen_urls:
+        omissions: list[WebSearchOmission] = []
+        for source_kind, provider_index, raw in _ordered_results(data, request.result_type):
+            try:
+                item = _result_item_from_json(
+                    raw, len(results) + 1, provider_request_id, source_kind
+                )
+            except _InvalidItem as exc:
+                omissions.append(
+                    WebSearchOmission(
+                        source_kind=source_kind, provider_index=provider_index, reason=exc.reason
+                    )
+                )
                 continue
-            seen_urls.add(item.url)
             results.append(item)
-
+        query = data.get("query")
+        if query is None:
+            query = {}
+        if not isinstance(query, dict):
+            raise ValueError("Brave query metadata must be an object")
+        more = query.get("more_results_available")
+        if more is not None and type(more) is not bool:
+            raise ValueError("Brave pagination flag must be boolean")
+        if any(
+            query.get(key) is not None and not isinstance(query[key], str)
+            for key in ("original", "altered", "cleaned")
+        ):
+            raise ValueError("Brave query strings must be exact text")
         return WebSearchResponse(
             results=tuple(results),
             provider=_PROVIDER,
             provider_request_id=provider_request_id,
             retrieved_at=datetime.now(tz=UTC).isoformat().replace("+00:00", "Z"),
             attempts=attempts,
+            more_results_available=more,
+            provider_query=WebProviderQuery(
+                original=query.get("original"),
+                altered=query.get("altered"),
+                cleaned=query.get("cleaned"),
+            ),
+            omissions=tuple(omissions),
         )
 
 
@@ -264,190 +286,159 @@ def _error_from_response(response: httpx.Response) -> WebSearchError:
     return error
 
 
-def _normalize_base_url(value: str) -> str:
-    raw = value.strip()
-    if not raw:
-        raise ValueError("Brave Search base_url must not be empty")
-
-    parsed = urlsplit(raw)
-    if parsed.scheme != "https" or not parsed.netloc:
-        raise ValueError("Brave Search base_url must be an HTTPS URL")
-    if parsed.username or parsed.password:
-        raise ValueError("Brave Search base_url must not contain credentials")
-    if parsed.query or parsed.fragment:
-        raise ValueError("Brave Search base_url must not contain query or fragment")
-
-    scheme = parsed.scheme.lower()
-    hostname = (parsed.hostname or "").lower()
-    if not hostname:
-        raise ValueError("Brave Search base_url must include a host")
-
-    try:
-        port = parsed.port
-    except ValueError as exc:
-        raise ValueError("Brave Search base_url has an invalid port") from exc
-
-    netloc = hostname
-    if port and not ((scheme == "https" and port == 443) or (scheme == "http" and port == 80)):
-        netloc = f"{hostname}:{port}"
-
-    path = quote(parsed.path.rstrip("/"), safe="/%:@")
-    return urlunsplit((scheme, netloc, path, "", ""))
+class _InvalidItem(Exception):
+    def __init__(
+        self, reason: Literal["invalid_item", "missing_url", "unrepresentable_url"]
+    ) -> None:
+        self.reason: Literal["invalid_item", "missing_url", "unrepresentable_url"] = reason
 
 
 def _result_item_from_json(
-    raw: Any,
-    rank: int,
-    provider_request_id: str | None,
-    request_type: WebSearchResultType,
-) -> WebSearchResultItem | None:
+    raw: Any, rank: int, provider_request_id: str | None, source_kind: Literal["web", "news"]
+) -> WebSearchResultItem:
     if not isinstance(raw, dict):
-        return None
-
-    title = str(raw.get("title") or "").strip()
-    url = _normalize_http_url(raw.get("url"))
-    if not title or url is None:
-        return None
-
-    source_name = str(
-        (raw.get("profile") or {}).get("name") or raw.get("source") or ""
-    ).strip() or _hostname(url)
-    published_at = (
-        raw.get("age") or raw.get("page_age") or raw.get("published") or raw.get("published_time")
-    )
-    extra_snippets = raw.get("extra_snippets") or []
-    if not isinstance(extra_snippets, list):
-        raise ValueError("Brave extra snippets must be an array")
-    ref_type = "news" if request_type == WebSearchResultType.NEWS else "web"
-
+        raise _InvalidItem("invalid_item")
+    url = raw.get("url")
+    if not isinstance(url, str) or not url:
+        raise _InvalidItem("missing_url")
+    try:
+        parsed = urlsplit(url)
+        if (
+            len(url) > 4096
+            or parsed.scheme not in {"http", "https"}
+            or not parsed.hostname
+            or parsed.username
+            or parsed.password
+            or any(ord(c) < 33 or ord(c) == 127 for c in url)
+        ):
+            raise ValueError
+        url.encode("utf-8")
+        _ = parsed.port
+    except (ValueError, UnicodeError):
+        raise _InvalidItem("unrepresentable_url") from None
+    title = raw.get("title")
+    description = raw.get("description")
+    extra = raw.get("extra_snippets")
+    profile = raw.get("profile")
+    if description is None:
+        description = ""
+    if extra is None:
+        extra = []
+    if profile is None:
+        profile = {}
+    if (
+        not isinstance(title, str)
+        or not title
+        or not isinstance(description, str)
+        or not isinstance(extra, list)
+        or any(not isinstance(v, str) for v in extra)
+        or not isinstance(profile, dict)
+    ):
+        raise _InvalidItem("invalid_item")
+    source_name = profile.get("name")
+    if source_name is None:
+        source_name = raw.get("source")
+    if source_name is None:
+        source_name = parsed.hostname
+    published = None
+    for field in ("age", "page_age", "published", "published_time"):
+        if raw.get(field) is not None:
+            published = raw[field]
+            break
+    if not isinstance(source_name, str) or (
+        published is not None and not isinstance(published, str)
+    ):
+        raise _InvalidItem("invalid_item")
+    values = {
+        "title": title,
+        "display_url": parsed.netloc + parsed.path.rstrip("/"),
+        "snippet": description,
+        "published_at": published,
+        "source_name": source_name,
+    }
+    limits = {
+        "title": 512,
+        "display_url": 4096,
+        "snippet": 1000,
+        "published_at": 128,
+        "source_name": 256,
+    }
+    truncated = [
+        name for name, value in values.items() if value is not None and len(value) > limits[name]
+    ]
+    if len(extra) > 5 or any(len(v) > 1000 for v in extra):
+        truncated.append("extra_snippets")
     return WebSearchResultItem(
-        result_ref=f"brave:{ref_type}:" + hashlib.sha256(url.encode("utf-8")).hexdigest()[:32],
+        result_ref=f"brave:{source_kind}:" + hashlib.sha256(url.encode("utf-8")).hexdigest()[:32],
         title=title[:512],
         url=url,
-        display_url=_display_url(url),
-        snippet=str(raw.get("description") or "").strip()[:1000],
-        extra_snippets=tuple(
-            snippet.strip()[:1000]
-            for snippet in extra_snippets[:5]
-            if isinstance(snippet, str) and snippet.strip()
-        ),
-        published_at=_published_at(published_at),
-        source_name=source_name[:256] if source_name else None,
+        display_url=(parsed.netloc + parsed.path.rstrip("/"))[:4096],
+        snippet=description[:1000],
+        extra_snippets=tuple(value[:1000] for value in extra[:5]),
+        published_at=published[:128] if published is not None else None,
+        source_name=source_name[:256],
         rank=rank,
         provider=_PROVIDER,
         provider_request_id=provider_request_id,
+        source_kind=source_kind,
+        truncated_fields=tuple(truncated),
     )
 
 
-def _ordered_results(data: dict[str, Any], result_type: WebSearchResultType) -> list[Any]:
-    web_results = _nested_results(data, "web")
-    if result_type == WebSearchResultType.WEB:
-        return web_results
-
-    news_results = _nested_results(data, "news", fallback=data.get("results"))
-    if result_type == WebSearchResultType.NEWS:
-        return news_results
-
-    if result_type == WebSearchResultType.MIXED:
-        ordered: list[Any] = []
-        mixed = data.get("mixed")
-        if mixed is None:
-            mixed_main: object = []
-        elif isinstance(mixed, dict):
-            mixed_main = mixed.get("main", [])
+def _ordered_results(
+    data: dict[str, Any], result_type: WebSearchResultType
+) -> list[tuple[Any, int, Any]]:
+    collections = {
+        "web": _nested_results(data, "web"),
+        "news": _nested_results(data, "news", fallback=data.get("results")),
+    }
+    if result_type != WebSearchResultType.MIXED:
+        kind = "news" if result_type == WebSearchResultType.NEWS else "web"
+        return [(kind, i, raw) for i, raw in enumerate(collections[kind])]
+    mixed = data.get("mixed")
+    if mixed is None:
+        mixed = {}
+    if not isinstance(mixed, dict):
+        raise ValueError("Brave mixed metadata must be an object")
+    main = mixed.get("main")
+    if main is None:
+        main = []
+    if not isinstance(main, list):
+        raise ValueError("Brave mixed order must be an array")
+    ordered = []
+    seen = set()
+    for item in main:
+        if not isinstance(item, dict):
+            raise ValueError("Brave mixed reference must be an object")
+        kind, index = item.get("type"), item.get("index")
+        if kind not in collections:
+            continue
+        all_items = item.get("all", False)
+        if type(all_items) is not bool:
+            raise ValueError("Brave mixed all flag must be a boolean")
+        if all_items:
+            indices = range(len(collections[kind]))
+        elif type(index) is int and 0 <= index < len(collections[kind]):
+            indices = (index,)
         else:
-            raise ValueError("Brave mixed results must be an object")
-        if not isinstance(mixed_main, list):
-            raise ValueError("Brave mixed result order must be an array")
-        for item in mixed_main:
-            if not isinstance(item, dict) or not isinstance(item.get("index"), int):
-                continue
-            source_index = item["index"]
-            if item.get("type") == "web" and 0 <= source_index < len(web_results):
-                ordered.append(web_results[source_index])
-            elif item.get("type") == "news" and 0 <= source_index < len(news_results):
-                ordered.append(news_results[source_index])
-        return ordered or [*web_results, *news_results]
-
-    raise ValueError(f"Unsupported web search result type: {result_type}")
+            continue
+        for index in indices:
+            if (kind, index) not in seen:
+                ordered.append((kind, index, collections[kind][index]))
+                seen.add((kind, index))
+    for kind, items in collections.items():
+        ordered.extend((kind, i, raw) for i, raw in enumerate(items) if (kind, i) not in seen)
+    return ordered
 
 
-def _nested_results(
-    data: dict[str, Any],
-    key: str,
-    *,
-    fallback: object = None,
-) -> list[Any]:
+def _nested_results(data: dict[str, Any], key: str, *, fallback: object = None) -> list[Any]:
     container = data.get(key)
     if container is None:
         results = [] if fallback is None else fallback
     elif isinstance(container, dict):
         results = container.get("results", [] if fallback is None else fallback)
     else:
-        raise ValueError(f"Brave {key} results must be an object")
+        raise ValueError("Brave result container must be an object")
     if not isinstance(results, list):
-        raise ValueError(f"Brave {key} result list must be an array")
+        raise ValueError("Brave result collection must be an array")
     return results
-
-
-def _normalize_http_url(value: Any) -> str | None:
-    if not isinstance(value, str):
-        return None
-    stripped = value.strip()
-    if not stripped:
-        return None
-
-    parsed = urlsplit(stripped)
-    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
-        return None
-    if parsed.username or parsed.password:
-        return None
-
-    scheme = parsed.scheme.lower()
-    hostname = (parsed.hostname or "").lower()
-    port = parsed.port
-    netloc = hostname
-    if port and not ((scheme == "https" and port == 443) or (scheme == "http" and port == 80)):
-        netloc = f"{hostname}:{port}"
-
-    normalized = urlunsplit(
-        (
-            scheme,
-            netloc,
-            quote(parsed.path or "", safe="/%:@"),
-            urlencode(parse_qsl(parsed.query, keep_blank_values=True), doseq=True, quote_via=quote),
-            "",
-        )
-    )
-    return normalized if len(normalized) <= 4_096 else None
-
-
-def _hostname(url: str) -> str:
-    return urlsplit(url).hostname or ""
-
-
-def _display_url(url: str) -> str:
-    parsed = urlsplit(url)
-    path = parsed.path.rstrip("/")
-    if path and path != "/":
-        return f"{parsed.netloc}{path}"
-    return parsed.netloc
-
-
-def _freshness_window(days: int) -> str:
-    if days <= 1:
-        return "pd"
-    if days <= 7:
-        return "pw"
-    if days <= 31:
-        return "pm"
-    return "py"
-
-
-def _published_at(value: Any) -> str | None:
-    if not value:
-        return None
-    text = str(value).strip()
-    if len(text) >= 10 and text[4:5] == "-" and text[7:8] == "-":
-        return text[:10]
-    return text[:128]

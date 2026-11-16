@@ -72,7 +72,7 @@ async def search_once(api_key: str) -> None:
         budgets = RunBudgetState(profile.run_limits)
         result = await ToolExecutor.execute(
             plan.catalog_view.binding(WEB_SEARCH_SPEC.id),
-            ParsedJson({"query": "Brave Search API docs", "freshness_days": None}),
+            ParsedJson({"query": "Brave Search API docs", "freshness": None, "page_size": 20, "cursor": None}),
             ExecutionContext(
                 plan=plan,
                 grant=plan.grant(WEB_SEARCH_SPEC.id),
@@ -167,7 +167,7 @@ timeouts retain their existing uncertain state. Write handlers must let an ambig
 only when they can prove no effect occurred; returning a terminal domain failure for an ambiguous
 provider outcome is invalid.
 
-`bind_brave_web_search(provider, *, max_results=10, operation_deadline_seconds=12.0)` owns a
+`bind_brave_web_search(provider, *, policy=WebSearchPolicy(), operation_deadline_seconds=12.0)` owns a
 whole-search deadline that includes every Brave request and retry delay. The value must be positive,
 finite, and at most 12 seconds; host policy may tighten it but cannot consume the deliberate
 three-second guard before `web.search`'s 15-second executor deadline. It is included in the binding
@@ -180,20 +180,40 @@ each external attempt. They must also propagate task cancellation unchanged; sup
 replacing cancellation violates the provider contract. Unexpected provider `TimeoutError` and
 external task cancellation are not normalized by the binding and retain the executor's recovery
 semantics. Brave authentication, payment, network and timeout failures also return
-`UpstreamUnavailable`; authentication and payment refusals are not retried. The binding logs
-the provider and normalized failure code without query or credential data. A 402 is
+`UpstreamUnavailable`; authentication and payment refusals are not retried. A 402 is
 `payment_required` for programmatic provider callers, distinct from an invalid request.
 
-`bind_web_read(reader)` carries implementation revision `llm-tools-web-read-v3`. The reader ignores
-headers it does not consume, including repeated metadata. It rejects repeated framing, content-type,
-content-encoding, or redirect fields rather than choosing an ambiguous value. Plain-text
-extraction decodes only the declared character set and collapses whitespace: entity-looking text
-and markup remain literal data. HTML/XHTML extraction delegates its sole entity-decoding pass to
-`HTMLParser(convert_charrefs=True)`, then collapses whitespace without re-decoding parser output.
-The evidence locator records these algorithms as `plain-text-v2` and `html-visible-text-v2`;
-unchanged canonical JSON extraction remains `json-canonical-v1`. The Web-reader policy inputs and
-`web-read-v1` policy epoch are unchanged because accepted media and direct-network policy did not
-change.
+`web.search` now takes explicit `query`, `freshness`, `page_size` and `cursor` fields.
+Freshness is null, `pd`/`pw`/`pm`/`py`, or an inclusive `YYYY-MM-DDtoYYYY-MM-DD` range;
+it is forwarded exactly. Brave always receives count 20. Local result batches retain every
+recognized web/news hit, source ordering, exact URLs, and explicit omission/truncation evidence.
+Only the current provider page is cached. An items cursor reads that page without network access;
+eviction returns `StaleCursor`. Provider cursors deliberately observe a live page. The explicit
+boundary is `more`, `exhausted`, `unknown` or `provider_limit`; overlaps and provider limits prevent
+exhaustive-web claims. Bind the same immutable `WebSearchPolicy` to the provider, tool and
+`web_search_source_operation`; that pure helper exposes the exact paid source operation while
+returning null for local-only items reads. `WebSearchSourceOperation` validates its stored shape.
+
+`web.read` takes explicit `url`, `offset`, `max_bytes` and `expected_digest` fields. Start at offset
+zero with null digest and continue at the returned byte offset using its digest. Each success fits
+the complete 64-KiB envelope, while source text remains reachable through further chunks. One
+complete document is cached; after eviction a continuation may refetch but must verify the whole
+projection digest before returning content. Fresh offset-zero/null reads deliberately fetch again.
+The reader preserves source whitespace in plain text and JSON; HTML/XHTML remains inert visible
+text with one entity-decoding pass. The projection revisions are `web-plain-source-v3`,
+`web-json-source-v2` and `html-visible-text-v2`. Evidence retains the decoded upstream byte hash,
+separate from the projection digest, and identifies each returned range. Unread text is reachable
+content, never a claimed extraction omission. DNS/peer/redirect, media, wire/decoded size and deadline
+checks remain in force. Binding revision is `llm-tools-web-read-v4`, policy epoch `web-read-v2`.
+
+`llm_tools.content` exports small pure `utf8_slice`, `fit_text_chunk`, `projection_digest` and
+`html_visible_text` helpers for source owners. The chunk fitter accepts a bounded window beginning
+at a global byte offset and measures the caller's complete success payload. Source identity,
+provider cursors and resource lifecycles stay with their owners.
+
+Tool inputs retain one closed object root. Tool successes may also be tagged unions of closed
+objects; the schema compiler requires a common unique literal discriminator. Arbitrary, open,
+nullable and non-object success roots remain invalid.
 
 ## Activation and security
 

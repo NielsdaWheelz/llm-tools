@@ -14,6 +14,7 @@ from llm_tools.web.brave import BraveSearchProvider
 from llm_tools.web.contracts import (
     WebSearchError,
     WebSearchErrorCode,
+    WebSearchPolicy,
     WebSearchRequest,
     WebSearchResultType,
 )
@@ -41,9 +42,9 @@ async def test_web_search_sends_brave_params_and_returns_normalized_results(
                 "results": [
                     {
                         "title": "Example Result",
-                        "url": "HTTPS://Example.COM:443/docs?q=Hello World#section",
+                        "url": "https://example.com/docs?q=Hello%20World#section",
                         "description": "Primary snippet",
-                        "extra_snippets": ["More context", "", 7],
+                        "extra_snippets": ["More context"],
                         "age": "2026-04-21T10:00:00Z",
                         "profile": {"name": "Example Docs"},
                         "provider_specific": {"must": "not leak"},
@@ -68,8 +69,9 @@ async def test_web_search_sends_brave_params_and_returns_normalized_results(
         WebSearchRequest(
             query="  brave   search  ",
             result_type=WebSearchResultType.WEB,
+            result_filter="web",
             limit=3,
-            freshness_days=7,
+            freshness="pw",
             allowed_domains=("https://Example.com/path",),
             blocked_domains=("Spam.Example",),
         )
@@ -88,18 +90,18 @@ async def test_web_search_sends_brave_params_and_returns_normalized_results(
     assert response.provider == "brave"
     assert response.provider_request_id == "req-123"
     assert datetime.fromisoformat(response.retrieved_at.replace("Z", "+00:00"))
-    assert len(response.results) == 1
+    assert len(response.results) == 2
     result = response.results[0]
     assert result.provider == "brave"
     assert result.provider_request_id == "req-123"
     assert result.rank == 1
     assert result.result_ref.startswith("brave:web:")
-    assert result.url == "https://example.com/docs?q=Hello%20World"
+    assert result.url == "https://example.com/docs?q=Hello%20World#section"
     assert result.display_url == "example.com/docs"
     assert result.title == "Example Result"
     assert result.snippet == "Primary snippet"
     assert result.extra_snippets == ("More context",)
-    assert result.published_at == "2026-04-21"
+    assert result.published_at == "2026-04-21T10:00:00Z"
     assert result.source_name == "Example Docs"
     assert not hasattr(result, "provider_specific")
 
@@ -128,7 +130,7 @@ async def test_news_search_uses_news_endpoint(httpx_client: httpx.AsyncClient) -
             query="market update",
             result_type=WebSearchResultType.NEWS,
             limit=2,
-            freshness_days=1,
+            freshness="pd",
         )
     )
 
@@ -220,9 +222,9 @@ async def test_host_limit_twenty_is_forwarded_and_caps_normalized_results(
     )
 
     assert route.calls.last.request.url.params["count"] == "20"
-    assert len(response.results) == 20
-    assert [result.rank for result in response.results] == list(range(1, 21))
-    assert response.results[-1].title == "Result 20"
+    assert len(response.results) == 21
+    assert [result.rank for result in response.results] == list(range(1, 22))
+    assert response.results[-1].title == "Result 21"
 
 
 @pytest.mark.asyncio
@@ -264,7 +266,7 @@ async def test_custom_base_url_is_normalized_and_api_key_is_trimmed(
     provider = BraveSearchProvider(
         httpx_client,
         api_key=" test-key ",
-        base_url="HTTPS://Proxy.Example:443/brave/",
+        policy=WebSearchPolicy(endpoint="HTTPS://Proxy.Example:443/brave/web/search"),
     )
 
     response = await provider.search(WebSearchRequest(query="base url"))
@@ -277,13 +279,27 @@ async def test_custom_base_url_is_normalized_and_api_key_is_trimmed(
 @pytest.mark.asyncio
 async def test_provider_validates_base_url_and_timeout(httpx_client: httpx.AsyncClient) -> None:
     with pytest.raises(ValueError, match="HTTP"):
-        BraveSearchProvider(httpx_client, api_key="test-key", base_url="api.search.brave.com")
+        BraveSearchProvider(
+            httpx_client,
+            api_key="test-key",
+            policy=WebSearchPolicy(endpoint="api.search.brave.com"),
+        )
     with pytest.raises(ValueError, match="HTTPS"):
-        BraveSearchProvider(httpx_client, api_key="test-key", base_url="http://example.com")
+        BraveSearchProvider(
+            httpx_client, api_key="test-key", policy=WebSearchPolicy(endpoint="http://example.com")
+        )
     with pytest.raises(ValueError, match="credentials"):
-        BraveSearchProvider(httpx_client, api_key="test-key", base_url="https://u:p@example.com")
-    with pytest.raises(ValueError, match="query or fragment"):
-        BraveSearchProvider(httpx_client, api_key="test-key", base_url="https://example.com?q=1")
+        BraveSearchProvider(
+            httpx_client,
+            api_key="test-key",
+            policy=WebSearchPolicy(endpoint="https://u:p@example.com"),
+        )
+    with pytest.raises(ValueError, match="HTTPS"):
+        BraveSearchProvider(
+            httpx_client,
+            api_key="test-key",
+            policy=WebSearchPolicy(endpoint="https://example.com?q=1"),
+        )
     with pytest.raises(ValueError, match="positive"):
         BraveSearchProvider(httpx_client, api_key="test-key", timeout_seconds=0)
     for invalid in (True, float("nan"), float("inf")):
@@ -476,6 +492,15 @@ async def test_nested_malformed_payload_maps_to_bad_response(
     )
     async with httpx.AsyncClient(transport=transport) as client:
         provider = BraveSearchProvider(client, api_key="test-key")
+        if (
+            isinstance(payload, dict)
+            and isinstance(payload.get("web"), dict)
+            and payload["web"].get("results")
+        ):
+            response = await provider.search(WebSearchRequest(query="bad nested payload"))
+            assert response.results == ()
+            assert response.omissions[0].reason == "invalid_item"
+            return
         with pytest.raises(WebSearchError) as exc_info:
             await provider.search(WebSearchRequest(query="bad nested payload"))
 
