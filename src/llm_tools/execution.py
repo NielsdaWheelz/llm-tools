@@ -109,6 +109,10 @@ class BudgetState(Protocol):
 
     async def reserve(self, position: InvocationPosition, reservation: Reservation) -> bool: ...
 
+    async def release_capacity(self, position: InvocationPosition) -> None:
+        """Release active execution only; retain unsettled position cost."""
+        ...
+
     async def settle(self, position: InvocationPosition, settlement: Settlement) -> None: ...
 
 
@@ -297,147 +301,156 @@ class ToolExecutor:
         except ValueError as exc:
             raise PositionConflictDefect("position budget reservation conflicts") from exc
         if not reserved:
-            return await _terminalize_boundary("BudgetExceeded", context)
+            return await _terminalize_boundary(
+                "BudgetExceeded", context, actual_attempts=position.actual_attempts
+            )
 
-        if len(raw_bytes) > limits.max_input_bytes:
-            return await _terminalize_boundary("BudgetExceeded", context)
-
-        if isinstance(raw_input, MalformedJson):
-            return await _terminalize_boundary("InvalidInput", context)
+        owns_capacity = True
         try:
-            decoded = validate_tool_input(binding, raw_input.value)
-        except SchemaDecodeError:
-            return await _terminalize_boundary("InvalidInput", context)
+            if len(raw_bytes) > limits.max_input_bytes:
+                return await _terminalize_boundary("BudgetExceeded", context)
 
-        if isinstance(binding.execute, Unavailable):
-            context.telemetry.event(
-                "tool.unavailable",
-                {"tool_id": str(binding.spec.id)},
-            )
-            return await _terminalize_boundary(
-                "ToolUnavailable",
-                context,
-                actual_attempts=position.actual_attempts,
-            )
-        remaining_elapsed = context.budgets.remaining_elapsed_seconds
-        if remaining_elapsed is not None and not math.isfinite(remaining_elapsed):
-            raise ExecutorConfigurationDefect("run budget returned a non-finite deadline")
-        if context.cancellation.cancelled or (
-            remaining_elapsed is not None and remaining_elapsed <= 0
-        ):
-            return await _terminalize_boundary(
-                "DeadlineExceeded",
-                context,
-                actual_attempts=position.actual_attempts,
-            )
-        if binding.spec.effect is ToolEffect.Write and (
-            context.effect_id is None or not context.recorder.durable
-        ):
-            raise ExecutorConfigurationDefect(
-                "Write tool execution requires a stable effect id and durable recorder"
-            )
-
-        if position.actual_attempts > 0 and position.actual_attempts >= limits.max_attempts:
-            return await _terminalize_boundary(
-                "BudgetExceeded",
-                context,
-                actual_attempts=position.actual_attempts,
-            )
-
-        dispatch = await context.recorder.dispatch_started(
-            position=context.position,
-            replay_policy=binding.replay_policy,
-        )
-        if dispatch.terminal_result is not None:
-            return dispatch.terminal_result
-        if dispatch.uncertain:
-            raise RecoveryRequired("tool position has an uncertain outcome")
-        prior_attempts = dispatch.actual_attempts
-        if prior_attempts != position.actual_attempts:
-            return await _raise_dispatch_defect(
-                binding,
-                context,
-                RuntimeError("position attempt accounting changed before dispatch"),
-            )
-        remaining_attempts = limits.max_attempts - prior_attempts
-        deadline_seconds = limits.deadline_seconds
-        if remaining_elapsed is not None:
-            deadline_seconds = min(deadline_seconds, remaining_elapsed)
-        deadline = asyncio.get_running_loop().time() + deadline_seconds
-        dispatch_context = replace(
-            context,
-            grant=replace(
-                context.grant,
-                limits=context.grant.limits.tightened(max_attempts=remaining_attempts),
-            ),
-            deadline=deadline,
-        )
-        try:
-            async with asyncio.timeout_at(deadline):
-                outcome = await binding.execute.handler(decoded, dispatch_context)
-        except BoundaryFailure as failure:
+            if isinstance(raw_input, MalformedJson):
+                return await _terminalize_boundary("InvalidInput", context)
             try:
-                return await _terminalize_boundary(
-                    failure.error_type,
-                    context,
-                    actual_attempts=prior_attempts + failure.actual_attempts,
+                decoded = validate_tool_input(binding, raw_input.value)
+            except SchemaDecodeError:
+                return await _terminalize_boundary("InvalidInput", context)
+
+            if isinstance(binding.execute, Unavailable):
+                context.telemetry.event(
+                    "tool.unavailable",
+                    {"tool_id": str(binding.spec.id)},
                 )
+                return await _terminalize_boundary(
+                    "ToolUnavailable",
+                    context,
+                    actual_attempts=position.actual_attempts,
+                )
+            remaining_elapsed = context.budgets.remaining_elapsed_seconds
+            if remaining_elapsed is not None and not math.isfinite(remaining_elapsed):
+                raise ExecutorConfigurationDefect("run budget returned a non-finite deadline")
+            if context.cancellation.cancelled or (
+                remaining_elapsed is not None and remaining_elapsed <= 0
+            ):
+                return await _terminalize_boundary(
+                    "DeadlineExceeded",
+                    context,
+                    actual_attempts=position.actual_attempts,
+                )
+            if binding.spec.effect is ToolEffect.Write and (
+                context.effect_id is None or not context.recorder.durable
+            ):
+                raise ExecutorConfigurationDefect(
+                    "Write tool execution requires a stable effect id and durable recorder"
+                )
+
+            if position.actual_attempts > 0 and position.actual_attempts >= limits.max_attempts:
+                return await _terminalize_boundary(
+                    "BudgetExceeded",
+                    context,
+                    actual_attempts=position.actual_attempts,
+                )
+
+            dispatch = await context.recorder.dispatch_started(
+                position=context.position,
+                replay_policy=binding.replay_policy,
+            )
+            if dispatch.terminal_result is not None:
+                return dispatch.terminal_result
+            if dispatch.uncertain:
+                # This invocation did not acquire the dispatch claim.
+                owns_capacity = False
+                raise RecoveryRequired("tool position has an uncertain outcome")
+            prior_attempts = dispatch.actual_attempts
+            if prior_attempts != position.actual_attempts:
+                return await _raise_dispatch_defect(
+                    binding,
+                    context,
+                    RuntimeError("position attempt accounting changed before dispatch"),
+                )
+            remaining_attempts = limits.max_attempts - prior_attempts
+            deadline_seconds = limits.deadline_seconds
+            if remaining_elapsed is not None:
+                deadline_seconds = min(deadline_seconds, remaining_elapsed)
+            deadline = asyncio.get_running_loop().time() + deadline_seconds
+            dispatch_context = replace(
+                context,
+                grant=replace(
+                    context.grant,
+                    limits=context.grant.limits.tightened(max_attempts=remaining_attempts),
+                ),
+                deadline=deadline,
+            )
+            try:
+                async with asyncio.timeout_at(deadline):
+                    outcome = await binding.execute.handler(decoded, dispatch_context)
+            except BoundaryFailure as failure:
+                try:
+                    return await _terminalize_boundary(
+                        failure.error_type,
+                        context,
+                        actual_attempts=prior_attempts + failure.actual_attempts,
+                    )
+                except Exception as exc:
+                    return await _raise_dispatch_defect(binding, context, exc)
+            except DeclaredToolFailure as failure:
+                try:
+                    if binding.spec.error_type is NoDeclaredError:
+                        raise RuntimeError("tool without declared errors raised a declared failure")
+                    assert binding.spec.declared_error_schema is not None
+                    encoded_error = strict_encode(
+                        binding.spec.error_type,
+                        binding.spec.declared_error_schema,
+                        failure.error,
+                    )
+                    result = _failure_result(encoded_error)
+                    return await _terminalize_result(
+                        result,
+                        prior_attempts + failure.actual_attempts,
+                        context,
+                    )
+                except Exception as exc:
+                    return await _raise_dispatch_defect(binding, context, exc)
+            except TimeoutError as exc:
+                if binding.replay_policy is ReplayPolicy.BilledOnce:
+                    await context.recorder.uncertain(position=context.position)
+                    raise RecoveryRequired("BilledOnce tool outcome is uncertain") from exc
+                if binding.spec.effect is ToolEffect.Write:
+                    raise RecoveryRequired(
+                        "ReDispatchable Write outcome requires reconciliation"
+                    ) from exc
+                return await _terminalize_boundary(
+                    "DeadlineExceeded",
+                    context,
+                    actual_attempts=prior_attempts + remaining_attempts,
+                )
+            except asyncio.CancelledError:
+                if binding.replay_policy is ReplayPolicy.BilledOnce:
+                    await context.recorder.uncertain(position=context.position)
+                raise
             except Exception as exc:
                 return await _raise_dispatch_defect(binding, context, exc)
-        except DeclaredToolFailure as failure:
+
             try:
-                if binding.spec.error_type is NoDeclaredError:
-                    raise RuntimeError("tool without declared errors raised a declared failure")
-                assert binding.spec.declared_error_schema is not None
-                encoded_error = strict_encode(
-                    binding.spec.error_type,
-                    binding.spec.declared_error_schema,
-                    failure.error,
+                if not isinstance(outcome, HandlerSuccess):
+                    raise RuntimeError("tool handler returned an invalid private outcome")
+                encoded_success = strict_encode(
+                    binding.spec.success_type,
+                    binding.spec.success_schema,
+                    outcome.value,
                 )
-                result = _failure_result(encoded_error)
+                result: ToolResult = {"type": "Success", "value": encoded_success}
                 return await _terminalize_result(
                     result,
-                    prior_attempts + failure.actual_attempts,
+                    prior_attempts + outcome.actual_attempts,
                     context,
                 )
             except Exception as exc:
                 return await _raise_dispatch_defect(binding, context, exc)
-        except TimeoutError as exc:
-            if binding.replay_policy is ReplayPolicy.BilledOnce:
-                await context.recorder.uncertain(position=context.position)
-                raise RecoveryRequired("BilledOnce tool outcome is uncertain") from exc
-            if binding.spec.effect is ToolEffect.Write:
-                raise RecoveryRequired(
-                    "ReDispatchable Write outcome requires reconciliation"
-                ) from exc
-            return await _terminalize_boundary(
-                "DeadlineExceeded",
-                context,
-                actual_attempts=prior_attempts + remaining_attempts,
-            )
-        except asyncio.CancelledError:
-            if binding.replay_policy is ReplayPolicy.BilledOnce:
-                await context.recorder.uncertain(position=context.position)
-            raise
-        except Exception as exc:
-            return await _raise_dispatch_defect(binding, context, exc)
-
-        try:
-            if not isinstance(outcome, HandlerSuccess):
-                raise RuntimeError("tool handler returned an invalid private outcome")
-            encoded_success = strict_encode(
-                binding.spec.success_type,
-                binding.spec.success_schema,
-                outcome.value,
-            )
-            result: ToolResult = {"type": "Success", "value": encoded_success}
-            return await _terminalize_result(
-                result,
-                prior_attempts + outcome.actual_attempts,
-                context,
-            )
-        except Exception as exc:
-            return await _raise_dispatch_defect(binding, context, exc)
+        finally:
+            if owns_capacity:
+                await context.budgets.release_capacity(context.position)
 
 
 def _verify_context(

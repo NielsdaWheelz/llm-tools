@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import time
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 from llm_tools.execution import InvocationPosition, Reservation, Settlement
 from llm_tools.profiles import RunLimits
@@ -52,6 +52,7 @@ def can_reserve(limits: RunLimits, totals: BudgetTotals, reservation: Reservatio
 class _Spend:
     reservation: Reservation
     settlement: Settlement | None = None
+    active: bool = True
 
 
 class RunBudgetState:
@@ -111,6 +112,11 @@ class RunBudgetState:
         if existing is not None:
             if existing.reservation != reservation:
                 raise ValueError("position budget reservation differs from its original spend")
+            if existing.settlement is None and not existing.active:
+                if self._totals.in_flight >= self._limits.max_in_flight:
+                    return False
+                self._totals = replace(self._totals, in_flight=self._totals.in_flight + 1)
+                existing.active = True
             return True
         if not can_reserve(self._limits, self._totals, reservation):
             return False
@@ -124,6 +130,14 @@ class RunBudgetState:
             in_flight=totals.in_flight + 1,
         )
         return True
+
+    async def release_capacity(self, position: InvocationPosition) -> None:
+        spend = self._spend.get(position)
+        if spend is None:
+            raise ValueError("position has no budget charge")
+        if spend.active:
+            self._totals = replace(self._totals, in_flight=self._totals.in_flight - 1)
+            spend.active = False
 
     async def settle(self, position: InvocationPosition, settlement: Settlement) -> None:
         spend = self._spend.get(position)
@@ -152,8 +166,9 @@ class RunBudgetState:
                 - spend.reservation.max_output_bytes
                 + settlement.actual_output_bytes
             ),
-            in_flight=totals.in_flight - 1,
+            in_flight=totals.in_flight - int(spend.active),
         )
         self._actual_external_attempts += settlement.actual_attempts
         self._actual_output_bytes += settlement.actual_output_bytes
         spend.settlement = settlement
+        spend.active = False

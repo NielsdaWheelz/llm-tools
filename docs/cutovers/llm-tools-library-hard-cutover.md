@@ -192,9 +192,10 @@ executor performs exactly:
    hash that canonical envelope before typed decode;
 3. ask the recorder to occupy or inspect the position with that digest: an id/digest mismatch
    defects, a matching terminal result returns unchanged, and an uncertain
-   `BilledOnce` position raises the host-only recovery signal without dispatch;
+   position or unresolved dispatch claim raises the host-only recovery
+   signal without reserving capacity or dispatching again;
 4. reserve the call and canonical input bytes plus maximum attempt/output spend
-   in position-owned budget state; if reservation fails, record no budget
+   in position-owned budget state; if reservation fails, record no new budget
    charge and terminalize `BudgetExceeded` at the occupied position without
    dispatch;
 5. strictly decode input; terminalize `InvalidInput` through the same position
@@ -207,6 +208,9 @@ executor performs exactly:
 8. accept the handler's private `(declared outcome, actual_attempts)` value,
    strictly encode the public success/failure, and atomically/idempotently commit
    terminal result plus final budget settlement through the recorder.
+9. release the accepted invocation's active executor capacity on exit, including
+   recovery, cancellation, or a defect. A duplicate that finds an existing active
+   dispatch owns no capacity release. This does not settle unknown cost or effect.
 
 Raw transport-oversize/non-UTF-8 rejection, where the engine owns raw text, is
 a provider request-boundary failure. Every canonical-bounded parsed or
@@ -216,7 +220,8 @@ malformed JSON, a non-object JSON value, or an object outside the strict schema
 terminalizes `InvalidInput`. A rejected reservation records no budget charge,
 because a rejection cannot itself exceed the hard run ceiling it reports.
 Invalid input, unavailable, budget, and pre-dispatch deadline outcomes use zero
-attempts and actual encoded output bytes; settlement refunds unused
+new attempts and actual encoded output bytes; verified re-entry retains prior
+recorded attempts. Settlement refunds unused
 attempt/output reservation. A pre-dispatch rejection dispatches nothing. After
 dispatch, a timeout or unknown outcome on `BilledOnce` stays uncertain and
 raises the host recovery signal; it is not mislabeled as `DeadlineExceeded`. A
@@ -476,7 +481,12 @@ charges the known input/call and reserves the maximum output and attempt spend;
 it settles/refunds unused reservation only in the recorder's atomic terminal
 commit. Uncertainty retains the reservation until explicit reconciliation
 terminalizes that position; neither an exception nor process recovery refunds
-it independently. Elapsed time is measured against the run deadline. A
+it independently. Active executor capacity is separate: `BudgetState.release_capacity`
+idempotently releases only that position's slot when execution exits. A recorder
+rechecks `budgets.reserve` for accepted verified re-entry; released, unsettled
+work reacquires only capacity without charging calls/input or reserved cost
+again. Settled replay/recovery does not reacquire a slot. Elapsed time is measured
+against the run deadline. A
 rejected reservation records no budget charge and dispatches nothing; its
 position-owned `BudgetExceeded` result is replayed without repeated admission.
 Every dispatched attempt counts; a retry is not free.

@@ -117,6 +117,12 @@ attempts/output. `can_reserve(limits, totals, reservation)` is the shared pure a
 the host handles existing positions first under its recorder lock or transaction. `RunBudgetState`
 uses the same predicate with running totals and idempotent position settlement. It supplies no
 durability claim; database-backed hosts persist result and settlement atomically.
+`BudgetState.release_capacity(position)` releases only the active executor slot. The executor
+calls it when an accepted invocation exits, including recovery, cancellation, or a defect;
+a duplicate that finds another active dispatch does not release that dispatch's slot.
+Unsettled attempt/output maxima remain reserved until terminal settlement. A recorder must
+call `budgets.reserve` again for an accepted, verified re-entry: it reacquires released capacity
+without recharging cumulative spend. Settled replay never reacquires capacity or charges again.
 
 `validate_tool_input(binding, arguments)` is the public pure validation boundary. It returns the
 binding's declared input type or raises `SchemaDecodeError`; it has no execution context and cannot
