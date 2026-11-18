@@ -69,14 +69,9 @@ class _InMemoryPositionRecorder:
             or existing.replay_policy != replay_policy
         ):
             raise ValueError("occupied position invocation mismatch")
-        recovered_billed_dispatch = (
-            existing.replay_policy is ReplayPolicy.BilledOnce
-            and existing.dispatches > 0
-            and existing.terminal_result is None
-        )
         return PositionState(
             terminal_result=existing.terminal_result,
-            uncertain=existing.uncertain or recovered_billed_dispatch,
+            uncertain=existing.uncertain or existing.in_flight,
             actual_attempts=existing.abandoned_attempts,
         )
 
@@ -92,7 +87,11 @@ class _InMemoryPositionRecorder:
             if record.reservation != reservation:
                 raise ValueError("position reservation differs from its original record")
             assert record.reservation_accepted is not None
-            return record.reservation_accepted
+            if not record.reservation_accepted:
+                return False
+            if record.in_flight or record.uncertain:
+                return True
+            return await budgets.reserve(position, reservation)
         accepted = await budgets.reserve(position, reservation)
         record.reservation = reservation
         record.reservation_accepted = accepted

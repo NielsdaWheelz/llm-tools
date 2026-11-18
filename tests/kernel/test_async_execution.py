@@ -75,6 +75,7 @@ RUN_LIMITS = RunLimits(
 def test_recorder_and_budget_mutation_contracts_are_async_only() -> None:
     for method in (
         "reserve",
+        "release_capacity",
         "settle",
     ):
         assert inspect.iscoroutinefunction(getattr(BudgetState, method))
@@ -103,6 +104,12 @@ async def test_executor_awaits_recorder_budget_and_handler_boundaries() -> None:
             accepted = await super().reserve(position, reservation)
             trace.append("budget.reserve.exit")
             return accepted
+
+        async def release_capacity(self, position: InvocationPosition) -> None:
+            trace.append("budget.release_capacity.enter")
+            await asyncio.sleep(0)
+            await super().release_capacity(position)
+            trace.append("budget.release_capacity.exit")
 
         async def settle(
             self,
@@ -217,6 +224,8 @@ async def test_executor_awaits_recorder_budget_and_handler_boundaries() -> None:
         "budget.settle.enter",
         "budget.settle.exit",
         "recorder.terminalize_and_settle.exit",
+        "budget.release_capacity.enter",
+        "budget.release_capacity.exit",
     ]
     record = recorder.record(position)
     assert record.terminal_result == {"type": "Success", "value": {"value": "hello"}}
