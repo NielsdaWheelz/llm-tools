@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import math
 import re
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
 
@@ -84,6 +84,68 @@ def canonical_json_bytes(value: JsonValue) -> bytes:
         return rfc8785.dumps(value)
     except (rfc8785.CanonicalizationError, TypeError, ValueError) as exc:
         raise ValueError("value is not canonical JSON") from exc
+
+
+def share_presentation_schemas(
+    roots: Sequence[JsonObject],
+) -> tuple[list[JsonObject], JsonObject]:
+    """Share repeated titled objects within one table of compiled presentations."""
+
+    objects: dict[bytes, tuple[JsonObject, int]] = {}
+
+    def collect(node: JsonObject) -> JsonObject:
+        title = node.get("title")
+        if node.get("type") == "object" and isinstance(title, str):
+            key = canonical_json_bytes(node)
+            original, count = objects.get(key, (node, 0))
+            objects[key] = (original, count + 1)
+        _map_schema_children(node, collect)
+        return node
+
+    for root in roots:
+        collect(root)
+
+    names: dict[bytes, str] = {}
+    used: set[str] = set()
+    for key, (node, count) in objects.items():
+        if count < 2:
+            continue
+        base = re.sub(r"[^A-Za-z0-9_.-]", "_", node["title"]) or "Schema"
+        name = base
+        suffix = 2
+        while name in used:
+            name = f"{base}_{suffix}"
+            suffix += 1
+        names[key] = name
+        used.add(name)
+
+    def reference(node: JsonObject) -> JsonObject:
+        if node.get("type") == "object" and isinstance(node.get("title"), str):
+            name = names.get(canonical_json_bytes(node))
+            if name is not None:
+                return {"$ref": f"#/$defs/{name}"}
+        return _map_schema_children(node, reference)
+
+    definitions = {
+        name: _map_schema_children(objects[key][0], reference) for key, name in names.items()
+    }
+    return [reference(root) for root in roots], definitions
+
+
+def _map_schema_children(
+    node: JsonObject, transform: Callable[[JsonObject], JsonObject]
+) -> JsonObject:
+    mapped = node.copy()
+    if "properties" in node:
+        mapped["properties"] = {
+            name: transform(child) for name, child in sorted(node["properties"].items())
+        }
+    if "items" in node:
+        mapped["items"] = transform(node["items"])
+    for keyword in ("anyOf", "oneOf"):
+        if keyword in node:
+            mapped[keyword] = [transform(child) for child in node[keyword]]
+    return mapped
 
 
 def compile_schema(python_type: Any) -> CompiledSchema:
