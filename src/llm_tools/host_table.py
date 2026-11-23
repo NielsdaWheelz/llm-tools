@@ -6,8 +6,6 @@ from llm_tools.profiles import FrozenToolPlan, HostTable
 from llm_tools.prompt_sections import PromptJson, PromptSection, PromptSectionKind
 from llm_tools.schema import JsonObject, share_presentation_schemas
 
-_SCHEMA_FIELDS = ("input_schema", "success_schema", "error_schema")
-
 
 def publish_host_table(plan: FrozenToolPlan) -> PromptSection:
     """Publish one exact HostTable plan as immutable model-facing prompt data."""
@@ -42,7 +40,11 @@ def publish_host_table(plan: FrozenToolPlan) -> PromptSection:
             }
         )
 
-    locations = [(tool, field) for tool in tools for field in _SCHEMA_FIELDS]
+    locations = [
+        (tool, field)
+        for tool in tools
+        for field in ("input_schema", "success_schema", "error_schema")
+    ]
     schemas, definitions = share_presentation_schemas([tool[field] for tool, field in locations])
     for (tool, field), schema in zip(locations, schemas, strict=True):
         tool[field] = schema
