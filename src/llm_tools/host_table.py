@@ -4,7 +4,9 @@ from __future__ import annotations
 
 from llm_tools.profiles import FrozenToolPlan, HostTable
 from llm_tools.prompt_sections import PromptJson, PromptSection, PromptSectionKind
-from llm_tools.schema import JsonObject
+from llm_tools.schema import JsonObject, share_presentation_schemas
+
+_SCHEMA_FIELDS = ("input_schema", "success_schema", "error_schema")
 
 
 def publish_host_table(plan: FrozenToolPlan) -> PromptSection:
@@ -40,15 +42,21 @@ def publish_host_table(plan: FrozenToolPlan) -> PromptSection:
             }
         )
 
+    locations = [(tool, field) for tool in tools for field in _SCHEMA_FIELDS]
+    schemas, definitions = share_presentation_schemas([tool[field] for tool, field in locations])
+    for (tool, field), schema in zip(locations, schemas, strict=True):
+        tool[field] = schema
+
+    body: JsonObject = {
+        "count": len(tools),
+        "plan_revision": plan.plan_revision,
+        "profile_revision": plan.profile.profile_revision,
+        "tools": tools,
+    }
+    if definitions:
+        body["$defs"] = definitions
     return PromptSection(
         kind=PromptSectionKind("host_table"),
         attributes=(),
-        body=PromptJson(
-            {
-                "count": len(tools),
-                "plan_revision": plan.plan_revision,
-                "profile_revision": plan.profile.profile_revision,
-                "tools": tools,
-            }
-        ),
+        body=PromptJson(body),
     )

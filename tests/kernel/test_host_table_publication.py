@@ -132,19 +132,28 @@ def test_host_table_publishes_exact_ordered_plan_as_escaped_prompt_data() -> Non
     tools = payload["tools"]
     assert isinstance(tools, list)
     assert [tool["id"] for tool in tools] == ["zeta.read", "alpha.read"]
+    definitions = payload["$defs"]
+    assert isinstance(definitions, dict)
+    assert definitions["Input"] == zeta.spec.input_schema.presentation
+    assert definitions["Success"] == zeta.spec.success_schema.presentation
+    error_schema = zeta.spec.error_schema.presentation
+    for branch in error_schema["anyOf"]:
+        assert definitions[branch["title"]] == branch
     assert tools[0] == {
         "declared_limits": TOOL_LIMITS.json(),
         "documentation": zeta.spec.documentation.text,
         "documentation_revision": zeta.spec.documentation_revision,
         "effect": "Read",
         "effective_limits": TOOL_LIMITS.tightened(max_output_bytes=1_024).json(),
-        "error_schema": zeta.spec.error_schema.presentation,
+        "error_schema": {
+            "anyOf": [{"$ref": f"#/$defs/{branch['title']}"} for branch in error_schema["anyOf"]]
+        },
         "id": "zeta.read",
         "implementation_revision": zeta.implementation_revision,
-        "input_schema": zeta.spec.input_schema.presentation,
+        "input_schema": {"$ref": "#/$defs/Input"},
         "policy_revision": zeta.policy_revision,
         "replay_policy": "BilledOnce",
-        "success_schema": zeta.spec.success_schema.presentation,
+        "success_schema": {"$ref": "#/$defs/Success"},
         "summary": "Read zeta",
         "tool_contract_revision": zeta.spec.tool_contract_revision,
     }
